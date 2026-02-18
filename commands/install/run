@@ -5,4 +5,5 @@ set -euo pipefail
 PYTHON_BIN="${RUN_PYTHON:-python3}"
 
 "$PYTHON_BIN" -m pip install -e .[dev]
-echo "Installed occtl. Try: oc status"
+echo "Installed occtl in ${RUN_VENV_DIR:-local environment}."
+echo "Use the local runner: ./oc status"

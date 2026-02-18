@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")" && pwd)"
+VENV_BIN="$ROOT/.venv/bin"
+LOCAL_OC="$VENV_BIN/oc"
+
+if [[ -x "$LOCAL_OC" ]]; then
+  exec "$LOCAL_OC" "$@"
+fi
+
+if command -v oc >/dev/null 2>&1; then
+  exec oc "$@"
+fi
+
+cat <<'EOF'
+oc command is not on PATH.
+
+From this project, you can use:
+  ./oc <command>
+
+or run once:
+  source ./.venv/bin/activate
+EOF
+exit 1

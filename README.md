@@ -211,6 +211,12 @@ Try this first to get started quickly:
 ./run quality
 ```
 
+Run occtl from this repo:
+
+```bash
+./oc status
+```
+
 Inspect tooling environment:
 
 ```bash
