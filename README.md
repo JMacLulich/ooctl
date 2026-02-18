@@ -202,36 +202,13 @@ This repo uses a local virtual environment at `./.venv` for all `./run` tooling 
 
 - `./run` commands will create `./.venv` automatically if it does not exist.
 - Dependency installs for tooling are written into that environment.
-- If a tool is missing, run:
+
+Try this first to get started quickly:
 
 ```bash
 ./run install
-```
-
-Install dev dependencies with the project command wrapper:
-
-```bash
-./run install
-```
-
-Run linting:
-
-```bash
-./run lint
-./run lint fix
-```
-
-Run tests:
-
-```bash
-./run test
-```
-
-Run the full quality gate:
-
-```bash
+./run venv-status  # optional: confirm ruff/pytest are installed
 ./run quality
-./run quality fix
 ```
 
 Inspect tooling environment:
