@@ -217,6 +217,14 @@ Run occtl from this repo:
 ./oc status
 ```
 
+If you want `oc` on PATH, install the local launcher into `~/bin`:
+
+```bash
+./run install --bin
+export PATH="${HOME}/bin:$PATH"
+oc status
+```
+
 Inspect tooling environment:
 
 ```bash

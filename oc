@@ -2,7 +2,20 @@
 
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "$0")" && pwd)"
+SCRIPT_PATH="${BASH_SOURCE[0]}"
+
+if command -v readlink >/dev/null 2>&1; then
+  while [ -L "$SCRIPT_PATH" ]; do
+    target="$(readlink "$SCRIPT_PATH")"
+    if [[ "$target" = /* ]]; then
+      SCRIPT_PATH="$target"
+    else
+      SCRIPT_PATH="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)/$target"
+    fi
+  done
+fi
+
+ROOT="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
 VENV_BIN="$ROOT/.venv/bin"
 LOCAL_OC="$VENV_BIN/oc"
 

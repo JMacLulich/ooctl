@@ -2,3 +2,4 @@ Install the project in editable mode with dev dependencies.
 
 Usage:
   ./run install
+  ./run install --bin   # also create ~/bin/oc launcher

@@ -3,7 +3,45 @@
 set -euo pipefail
 
 PYTHON_BIN="${RUN_PYTHON:-python3}"
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+PROJECT_BIN="$PROJECT_ROOT/oc"
+
+usage() {
+  cat "${RUN_CMD_DIR}/desc"
+}
+
+install_launcher() {
+  local target_dir="${HOME}/bin"
+  local target_path="$target_dir/oc"
+
+  mkdir -p "$target_dir"
+  ln -sf "$PROJECT_BIN" "$target_path"
+  echo "Created launcher: $target_path"
+}
+
+case "${1-}" in
+  "" )
+    ;;
+  --help)
+    usage
+    exit 0
+    ;;
+  --bin)
+    install_launcher
+    ;;
+  *)
+    echo "Usage: ./run install [--bin]"
+    echo "  --bin: also install a ./oc launcher into ~/bin/oc"
+    exit 1
+    ;;
+esac
 
 "$PYTHON_BIN" -m pip install -e .[dev]
 echo "Installed occtl in ${RUN_VENV_DIR:-local environment}."
-echo "Use the local runner: ./oc status"
+if [[ -f "$PROJECT_BIN" && -x "$PROJECT_BIN" ]]; then
+  echo "Use from this repo: ./oc status"
+fi
+if [[ "${1-}" == "--bin" ]]; then
+  echo "Also installed global launcher: ~/bin/oc"
+  echo "Run: export PATH=\"\$HOME/bin:\$PATH\""
+fi
