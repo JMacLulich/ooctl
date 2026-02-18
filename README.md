@@ -236,3 +236,34 @@ Inspect tooling environment:
 ```bash
 ./run venv-status
 ```
+
+## Shell autocomplete
+
+Generate a completion script for your shell:
+
+```bash
+oc completion bash
+oc completion zsh
+oc completion fish
+```
+
+Quick setup for zsh:
+
+```bash
+mkdir -p ~/.zsh/completion
+oc completion zsh > ~/.zsh/completion/_oc
+echo 'fpath=(~/.zsh/completion $fpath)' >> ~/.zshrc
+echo 'autoload -Uz compinit && compinit' >> ~/.zshrc
+source ~/.zshrc
+```
+
+Quick setup for bash:
+
+```bash
+oc completion bash > ~/.bash_completion
+source ~/.bash_completion
+```
+
+Tip:
+
+- In zsh, type `oc` and `<TAB><TAB>` to complete `map|maps|new|...`

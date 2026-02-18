@@ -2,11 +2,34 @@ from __future__ import annotations
 
 import argparse
 import time
+from collections.abc import Sequence
 from pathlib import Path
 
 from . import config, tmux
 from .notify import discord_webhook, mac_notify
 from .voice import parse_voice
+
+COMMANDS = (
+    "map",
+    "maps",
+    "new",
+    "ensure",
+    "ls",
+    "focus",
+    "focused",
+    "status",
+    "say",
+    "enter",
+    "attach",
+    "watch",
+    "set-webhook",
+    "voice",
+    "completion",
+)
+
+
+def _fmt_cmds_for_shell(commands: Sequence[str]) -> str:
+    return " ".join(commands)
 
 
 def cmd_map(args: argparse.Namespace) -> int:
@@ -197,6 +220,92 @@ def cmd_voice(args: argparse.Namespace) -> int:
     return 2
 
 
+def cmd_completion(args: argparse.Namespace) -> int:
+    shell = args.shell.lower()
+    if shell == "bash":
+        print(_bash_completion_script())
+        return 0
+    if shell == "zsh":
+        print(_zsh_completion_script())
+        return 0
+    if shell == "fish":
+        print(_fish_completion_script())
+        return 0
+
+    print(f"unsupported shell: {shell}")
+    return 2
+
+
+def _bash_completion_script() -> str:
+    cmds = _fmt_cmds_for_shell(COMMANDS)
+    template = """# occtl bash completion
+_occtl_complete() {
+  local cur prev
+  COMPREPLY=()
+  cur="${COMP_WORDS[COMP_CWORD]}"
+  prev="${COMP_WORDS[COMP_CWORD-1]}"
+
+  if [[ $COMP_CWORD -eq 1 ]]; then
+    COMPREPLY=( $(compgen -W "{cmds}" -- "$cur") )
+    return 0
+  fi
+
+  case "$prev" in
+    watch)
+      COMPREPLY+=( $(compgen -W "--name --idle-seconds" -- "$cur") )
+      ;;
+    set-webhook)
+      return 0
+      ;;
+    completion)
+      COMPREPLY=( $(compgen -W "bash zsh fish" -- "$cur") )
+      ;;
+  esac
+}
+
+complete -F _occtl_complete oc
+    """
+    return template.replace("{cmds}", cmds)
+
+
+def _zsh_completion_script() -> str:
+    cmds = _fmt_cmds_for_shell(COMMANDS)
+    template = """#compdef oc
+
+_occtl() {
+  local -a commands
+  commands=(
+    __CMD_LIST__
+  )
+
+  _arguments -C \
+    '1: :->command' \
+    '*: :->args'
+
+  case "$state" in
+    command)
+      compadd -a commands
+      ;;
+  esac
+}
+
+compdef _occtl oc
+    """
+    return template.replace("__CMD_LIST__", cmds)
+
+
+def _fish_completion_script() -> str:
+    cmds = _fmt_cmds_for_shell(COMMANDS)
+    template = """# occtl fish completion
+complete -c oc -f
+complete -c oc -n '__fish_use_subcommand' -a "{cmds}"
+complete -c oc -n "__fish_seen_subcommand_from watch" -l name -r
+complete -c oc -n "__fish_seen_subcommand_from watch" -l idle-seconds -r
+complete -c oc -n "__fish_seen_subcommand_from completion" -f -a "bash zsh fish"
+    """
+    return template.replace("{cmds}", cmds)
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="oc", description="occtl — tmux + OpenCode command center")
     sub = p.add_subparsers(dest="cmd", required=False)
@@ -257,6 +366,10 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("voice", help="parse a voice phrase and execute (Shortcuts)")
     sp.add_argument("phrase", nargs="+")
     sp.set_defaults(fn=lambda a: cmd_voice(argparse.Namespace(phrase=" ".join(a.phrase))))
+
+    sp = sub.add_parser("completion", help="print shell completion script")
+    sp.add_argument("shell", choices=("bash", "zsh", "fish"))
+    sp.set_defaults(fn=cmd_completion)
 
     return p
 
