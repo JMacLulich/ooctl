@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+case "${1-}" in
+  "" )
+    :
+    ;;
+  "--help")
+    cat "${RUN_CMD_DIR}/desc"
+    exit 0
+    ;;
+  *)
+    echo "Usage: ./run venv-status"
+    exit 1
+    ;;
+esac
+
+if [[ ! -d "${RUN_VENV_DIR:-}" ]]; then
+  echo "No local environment found at ${RUN_VENV_DIR}"
+  echo "Run ./run install to create it."
+  exit 1
+fi
+
+if [[ ! -x "${RUN_PYTHON:-}" ]]; then
+  echo "venv python missing: ${RUN_PYTHON}"
+  exit 1
+fi
+
+python_version=$("${RUN_PYTHON}" --version)
+echo "venv: ${RUN_VENV_DIR}"
+echo "python: ${python_version}"
+
+if command -v ruff >/dev/null 2>&1; then
+  echo "ruff: $("${RUN_PYTHON}" -m ruff --version)"
+else
+  echo "ruff: not installed"
+fi
+
+if command -v pytest >/dev/null 2>&1; then
+  echo "pytest: $(${RUN_PYTHON} -m pytest --version)"
+else
+  echo "pytest: not installed"
+fi
+
+if "${RUN_PYTHON}" -m pip show occtl >/dev/null 2>&1; then
+  echo "occtl package: installed"
+else
+  echo "occtl package: not installed"
+fi

@@ -1,0 +1,5 @@
+Run ruff checks for linting and optionally auto-fix issues.
+
+Usage:
+  ./run lint        # Check only
+  ./run lint fix    # Auto-fix and format

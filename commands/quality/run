@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+
+case "${1:-}" in
+  "")
+    "$ROOT_DIR/commands/lint/run"
+    "$ROOT_DIR/commands/test/run"
+    ;;
+  "fix")
+    "$ROOT_DIR/commands/lint/run" fix
+    "$ROOT_DIR/commands/test/run"
+    ;;
+  "--help")
+    cat "$SCRIPT_DIR/desc"
+    ;;
+  *)
+    echo "Usage: ./run quality [fix]"
+    echo "  fix: run lint with auto-fixes, then tests"
+    exit 1
+    ;;
+esac

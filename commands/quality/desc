@@ -1,0 +1,5 @@
+Run all quality checks (lint + test) in one command.
+
+Usage:
+  ./run quality       # Lint and test
+  ./run quality fix   # Auto-fix lint, then test

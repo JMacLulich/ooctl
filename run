@@ -1,0 +1,135 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")" && pwd)"
+cd "$ROOT"
+
+RUN_CMDS_DIR="$ROOT/commands"
+VENV_DIR="$ROOT/.venv"
+VENV_BIN="$VENV_DIR/bin"
+RUN_PYTHON="$VENV_BIN/python"
+
+ensure_venv() {
+  if [[ -x "$RUN_PYTHON" && -d "$VENV_DIR/lib" ]]; then
+    return 0
+  fi
+
+  if ! command -v python3 >/dev/null 2>&1; then
+    echo "python3 is required to create the local run environment."
+    exit 1
+  fi
+
+  echo "Creating local environment: $VENV_DIR"
+  python3 -m venv "$VENV_DIR"
+}
+
+prepare_env() {
+  ensure_venv
+  export PATH="$VENV_BIN:$PATH"
+  export RUN_PYTHON
+  export RUN_VENV_DIR="$VENV_DIR"
+  return 0
+}
+
+usage() {
+  local command
+  local description
+
+  echo "Usage:"
+  echo "  ./run <command>"
+  echo
+  echo "Available commands:"
+  for cmd in "$RUN_CMDS_DIR"/*; do
+   if [[ -f "$cmd/run" && -x "$cmd/run" ]]; then
+      command="$(basename "$cmd")"
+      if [[ -f "$cmd/desc" ]]; then
+        read -r description < "$cmd/desc"
+      else
+        description="(no description)"
+      fi
+      printf "  %-10s %s\n" "$command" "$description"
+    fi
+  done
+  echo
+  echo "Run with --help for command-specific help where available:"
+  echo "  ./run help"
+  echo "  ./run help <command>"
+}
+
+print_command_help() {
+  local command="$1"
+  local desc_path="$RUN_CMDS_DIR/$command/desc"
+
+  if [[ -f "$desc_path" ]]; then
+    cat "$desc_path"
+    return 0
+  fi
+
+  if [[ -f "$RUN_CMDS_DIR/$command/run" ]]; then
+    echo "No command-specific docs for '$command'."
+    return 0
+  fi
+
+  return 1
+}
+
+run_command() {
+  local command="$1"
+  shift
+  local command_dir="$RUN_CMDS_DIR/$command"
+
+  if [[ ! -f "$command_dir/run" || ! -x "$command_dir/run" ]]; then
+    return 127
+  fi
+
+  export RUN_CMD_NAME="$command"
+  export RUN_CMD_DIR="$command_dir"
+
+  "${command_dir}/run" "$@"
+}
+
+COMMAND="${1:-help}"
+shift || true
+
+case "$COMMAND" in
+  lint|format|test|install|quality|venv-status)
+    prepare_env
+    ;;
+  *)
+    :
+    ;;
+esac
+
+case "$COMMAND" in
+  -h|--help|help)
+    if [[ ${1-} ]]; then
+      if ! print_command_help "$1"; then
+        echo "Unknown command: $1"
+        echo
+        usage
+        exit 1
+      fi
+    else
+      usage
+    fi
+    ;;
+
+  *)
+    status=0
+    run_command "$COMMAND" "$@" || status=$?
+
+    if [[ $status -eq 0 ]]; then
+      exit 0
+    fi
+
+    if [[ $status -eq 127 ]]; then
+      echo "Unknown command: $COMMAND"
+      echo
+      usage
+      exit 1
+    fi
+
+    exit $status
+    ;;
+esac

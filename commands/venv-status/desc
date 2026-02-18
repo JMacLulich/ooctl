@@ -1,0 +1,4 @@
+Inspect local run-tooling environment and dependency state.
+
+Usage:
+  ./run venv-status

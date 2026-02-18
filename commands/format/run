@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+PYTHON_BIN="${RUN_PYTHON:-python3}"
+
+if command -v ruff >/dev/null 2>&1; then
+  ruff format .
+elif "$PYTHON_BIN" -m ruff --help >/dev/null 2>&1; then
+  "$PYTHON_BIN" -m ruff format .
+else
+  echo "Missing dependency: ruff"
+  echo "Install with: $PYTHON_BIN -m pip install -e .[dev]"
+  exit 1
+fi

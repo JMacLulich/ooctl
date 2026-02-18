@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+PYTHON_BIN="${RUN_PYTHON:-python3}"
+
+if command -v pytest >/dev/null 2>&1; then
+  pytest -q
+elif "$PYTHON_BIN" -m pytest --version >/dev/null 2>&1; then
+  "$PYTHON_BIN" -m pytest -q
+else
+  echo "pytest not installed. Falling back to compileall check."
+  "$PYTHON_BIN" -m compileall -q occtl tests
+fi

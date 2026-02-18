@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+PYTHON_BIN="${RUN_PYTHON:-python3}"
+
+run_ruff() {
+  if command -v ruff >/dev/null 2>&1; then
+    ruff "$@"
+    return
+  fi
+
+  if "$PYTHON_BIN" -m ruff --help >/dev/null 2>&1; then
+    "$PYTHON_BIN" -m ruff "$@"
+    return
+  fi
+
+  echo "Missing dependency: ruff"
+  echo "Install with: $PYTHON_BIN -m pip install -e .[dev]"
+  exit 1
+}
+
+case "${1:-}" in
+  "")
+    run_ruff format --check .
+    run_ruff check .
+    ;;
+  "fix")
+    run_ruff check --fix --unsafe-fixes .
+    run_ruff format .
+    ;;
+  "--help")
+    cat "${RUN_CMD_DIR}/desc"
+    ;;
+  *)
+    echo "Usage: ./run lint [fix]"
+    exit 1
+    ;;
+esac

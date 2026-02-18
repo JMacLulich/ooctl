@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "occtl"
+version = "0.3.0"
+description = "Voice-first AI command center for tmux + OpenCode with alerts"
+requires-python = ">=3.10"
+readme = "README.md"
+dependencies = []
+
+[project.scripts]
+oc = "occtl.cli:main"
+
+[project.optional-dependencies]
+dev = [
+  "ruff>=0.1.0",
+  "pytest>=8.0.0",
+]
+
+[tool.setuptools]
+packages = ["occtl"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM", "RUF"]
+ignore = []
+
+[tool.ruff.format]
+quote-style = "double"
+line-ending = "lf"

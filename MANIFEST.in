@@ -1,0 +1,11 @@
+include README.md
+include pyproject.toml
+
+recursive-exclude tests *
+recursive-exclude commands *
+recursive-exclude launchd *
+recursive-exclude scripts *
+recursive-exclude .github/workflows *
+recursive-exclude .pytest_cache *
+recursive-exclude occtl.egg-info *
+prune .venv

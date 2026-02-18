@@ -1,0 +1,4 @@
+Run project tests.
+
+Usage:
+  ./run test

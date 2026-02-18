@@ -1,0 +1,4 @@
+Format source files with ruff.
+
+Usage:
+  ./run format
