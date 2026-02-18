@@ -217,6 +217,12 @@ Run occtl from this repo:
 ./oc status
 ```
 
+Tip:
+
+```bash
+oc                  # no args = status
+```
+
 If you want `oc` on PATH, install the local launcher into `~/bin`:
 
 ```bash
