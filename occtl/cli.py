@@ -199,7 +199,7 @@ def cmd_voice(args: argparse.Namespace) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="oc", description="occtl — tmux + OpenCode command center")
-    sub = p.add_subparsers(dest="cmd", required=True)
+    sub = p.add_subparsers(dest="cmd", required=False)
 
     sp = sub.add_parser("map", help="map session name to directory")
     sp.add_argument("name")
@@ -264,6 +264,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> None:
     config.ensure_config_dir()
     parser = build_parser()
+    parser.set_defaults(fn=cmd_status)
     args = parser.parse_args()
     rc = args.fn(args)
     raise SystemExit(rc)
