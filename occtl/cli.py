@@ -466,7 +466,9 @@ def _choose_attach_session_interactive() -> str | None:
     fd = sys.stdin.fileno()
     old = termios.tcgetattr(fd)
     try:
-        tty.setraw(fd)
+        # Use cbreak (not raw) so terminal output processing keeps newline->CRLF.
+        # Raw mode can cause staircase/diagonal rendering in some SSH terminals.
+        tty.setcbreak(fd)
         while True:
             _render_attach_menu(rows, idx)
             key = _read_menu_key()
