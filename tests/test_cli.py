@@ -38,6 +38,13 @@ def test_map_command_allows_spaced_session_names() -> None:
     assert args.path == "/tmp/gig"
 
 
+def test_attach_command_name_is_optional() -> None:
+    parser = cli.build_parser()
+    args = parser.parse_args(["attach"])
+
+    assert args.name is None
+
+
 def test_setting_and_loading_spaced_mapping(tmp_path: Path, monkeypatch) -> None:
     config_dir = tmp_path / ".config" / "occtl"
     monkeypatch.setattr(config, "CONFIG_DIR", config_dir)
@@ -119,6 +126,51 @@ def test_kill_requires_name_or_focus(monkeypatch, capsys) -> None:
 
     assert rc == 1
     assert "no session provided and nothing focused" in capsys.readouterr().out
+
+
+def test_cmd_attach_uses_interactive_choice_when_name_missing(monkeypatch) -> None:
+    monkeypatch.setattr(cli, "_choose_attach_session_interactive", lambda: "filter2")
+    monkeypatch.setattr(cli.tmux, "has_session", lambda name: name == "filter2")
+
+    called: dict[str, str | None] = {"focus": None, "attach": None}
+
+    monkeypatch.setattr(cli.config, "set_focus", lambda name: called.__setitem__("focus", name))
+    monkeypatch.setattr(cli.tmux, "attach", lambda name: called.__setitem__("attach", name))
+
+    rc = cli.cmd_attach(argparse.Namespace(name=None))
+
+    assert rc == 0
+    assert called["focus"] == "filter2"
+    assert called["attach"] == "filter2"
+
+
+def test_cmd_attach_starts_mapped_session_when_not_running(monkeypatch) -> None:
+    monkeypatch.setattr(cli, "_choose_attach_session_interactive", lambda: "gig guide")
+    monkeypatch.setattr(
+        cli.config, "get_mapping", lambda name: "/tmp/gig" if name == "gig guide" else ""
+    )
+    started = {"value": False}
+
+    def _has_session(_name: str) -> bool:
+        return started["value"]
+
+    def _cmd_new(_args: argparse.Namespace) -> int:
+        started["value"] = True
+        return 0
+
+    monkeypatch.setattr(cli.tmux, "has_session", _has_session)
+    monkeypatch.setattr(cli, "cmd_new", _cmd_new)
+
+    called: dict[str, str | None] = {"focus": None, "attach": None}
+    monkeypatch.setattr(cli.config, "set_focus", lambda name: called.__setitem__("focus", name))
+    monkeypatch.setattr(cli.tmux, "attach", lambda name: called.__setitem__("attach", name))
+
+    rc = cli.cmd_attach(argparse.Namespace(name=None))
+
+    assert rc == 0
+    assert started["value"] is True
+    assert called["focus"] == "gig guide"
+    assert called["attach"] == "gig guide"
 
 
 def test_match_wait_pattern_detects_prompt() -> None:

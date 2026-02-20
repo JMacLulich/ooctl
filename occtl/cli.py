@@ -3,7 +3,10 @@ from __future__ import annotations
 import argparse
 import re
 import socket
+import sys
+import termios
 import time
+import tty
 import urllib.request
 from collections.abc import Sequence
 from pathlib import Path
@@ -274,12 +277,116 @@ def cmd_enter(args: argparse.Namespace) -> int:
 
 
 def cmd_attach(args: argparse.Namespace) -> int:
-    if not tmux.has_session(args.name):
-        print(f"session not found: {args.name}")
+    session = args.name or _choose_attach_session_interactive()
+    if not session:
+        print("attach cancelled")
         return 1
-    config.set_focus(args.name)
-    tmux.attach(args.name)
+
+    if not tmux.has_session(session):
+        if config.get_mapping(session):
+            rc = cmd_new(argparse.Namespace(name=session))
+            if rc != 0:
+                return rc
+        else:
+            print(f"session not found: {session}")
+            return 1
+
+    config.set_focus(session)
+    tmux.attach(session)
     return 0
+
+
+def _build_attach_menu_rows() -> list[dict[str, object]]:
+    mappings = config.load_mappings()
+    sessions = {row["name"]: row for row in tmux.list_sessions()}
+    names = sorted(set(mappings.keys()) | set(sessions.keys()))
+
+    focus = config.get_focus()
+    rows: list[dict[str, object]] = []
+    for name in names:
+        live = sessions.get(name)
+        mapped = mappings.get(name, "")
+        rows.append(
+            {
+                "name": name,
+                "mapped_dir": mapped,
+                "running": bool(live),
+                "attached": bool(live and live["attached"]),
+                "windows": int(live["windows"]) if live else 0,
+                "focused": name == focus,
+            }
+        )
+    return rows
+
+
+def _render_attach_menu(rows: list[dict[str, object]], idx: int) -> None:
+    print("\033[2J\033[H", end="")
+    print("OpenCode Sessions")
+    print("Use ↑/↓ (or j/k), Enter to attach/start, q to cancel\n")
+
+    for i, row in enumerate(rows):
+        cursor = ">" if i == idx else " "
+        status = "RUNNING" if row["running"] else "STOPPED"
+        focus = " FOCUS" if row["focused"] else ""
+        attached = " ATTACHED" if row["attached"] else ""
+        mapped = row["mapped_dir"] or "(unmapped)"
+        extra = f" windows={row['windows']}" if row["running"] else ""
+        print(f"{cursor} {row['name']}  [{status}{focus}{attached}]{extra}")
+        print(f"    {mapped}")
+
+
+def _read_menu_key() -> str:
+    ch = sys.stdin.read(1)
+    if ch == "\x1b":
+        nxt = sys.stdin.read(1)
+        if nxt == "[":
+            third = sys.stdin.read(1)
+            if third == "A":
+                return "up"
+            if third == "B":
+                return "down"
+        return "esc"
+    if ch in {"k", "K"}:
+        return "up"
+    if ch in {"j", "J"}:
+        return "down"
+    if ch in {"\r", "\n"}:
+        return "enter"
+    if ch in {"q", "Q"}:
+        return "quit"
+    return "other"
+
+
+def _choose_attach_session_interactive() -> str | None:
+    rows = _build_attach_menu_rows()
+    if not rows:
+        print("no mapped or running sessions found")
+        return None
+
+    if not sys.stdin.isatty() or not sys.stdout.isatty():
+        print("attach requires a session name in non-interactive mode")
+        return None
+
+    idx = 0
+    fd = sys.stdin.fileno()
+    old = termios.tcgetattr(fd)
+    try:
+        tty.setraw(fd)
+        while True:
+            _render_attach_menu(rows, idx)
+            key = _read_menu_key()
+            if key == "up":
+                idx = (idx - 1) % len(rows)
+            elif key == "down":
+                idx = (idx + 1) % len(rows)
+            elif key == "enter":
+                print("\033[2J\033[H", end="")
+                return str(rows[idx]["name"])
+            elif key in {"quit", "esc"}:
+                print("\033[2J\033[H", end="")
+                return None
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
 
 
 def cmd_kill(args: argparse.Namespace) -> int:
@@ -581,8 +688,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--session", default=None)
     sp.set_defaults(fn=cmd_enter)
 
-    sp = sub.add_parser("attach", help="attach to a session interactively")
-    sp.add_argument("name")
+    sp = sub.add_parser("attach", help="attach to a session (interactive picker when omitted)")
+    sp.add_argument("name", nargs="?", default=None)
     sp.set_defaults(fn=cmd_attach)
 
     sp = sub.add_parser("kill", help="kill a session (focused session by default)")
