@@ -4,24 +4,24 @@
 <plist version="1.0">
   <dict>
     <key>Label</key>
-    <string>com.jason.occtl.watch</string>
+    <string>com.jason.occtl.relay</string>
 
     <key>ProgramArguments</key>
     <array>
       <string>/usr/bin/python3</string>
-      <string>/Users/jasonmaclulich/.config/occtl/watch_runner.py</string>
+      <string>/Users/jasonmaclulich/.config/occtl/relay_server.py</string>
     </array>
-
-    <key>StartInterval</key>
-    <integer>60</integer>
 
     <key>RunAtLoad</key>
     <true/>
 
+    <key>KeepAlive</key>
+    <true/>
+
     <key>StandardOutPath</key>
-    <string>/tmp/occtl-watch.out</string>
+    <string>/tmp/occtl-relay.out</string>
 
     <key>StandardErrorPath</key>
-    <string>/tmp/occtl-watch.err</string>
+    <string>/tmp/occtl-relay.err</string>
   </dict>
 </plist>

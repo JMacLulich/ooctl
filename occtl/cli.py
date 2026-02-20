@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import argparse
+import re
+import socket
 import time
+import urllib.request
 from collections.abc import Sequence
 from pathlib import Path
 
 from . import config, tmux
-from .notify import discord_webhook, mac_notify
+from .notify import alert_router_webhook, discord_webhook, mac_notify
+from .relay import serve as serve_relay
 from .voice import parse_voice
 
 COMMANDS = (
@@ -21,11 +25,116 @@ COMMANDS = (
     "say",
     "enter",
     "attach",
+    "kill",
     "watch",
     "set-webhook",
+    "set-alert-router",
+    "set-relay-token",
+    "relay",
     "voice",
     "completion",
 )
+
+WAIT_PATTERNS = (
+    r"press enter",
+    r"awaiting input",
+    r"continue\?",
+    r"\bcontinue\b",
+    r"\(y/n\)",
+    r"user input required",
+    r"confirm\?",
+)
+
+STALL_PATTERNS = (
+    r"thinking:\s+planning",
+    r"planning phase\s+\d+",
+    r"spawning planner\.{0,3}",
+)
+
+
+def _match_wait_pattern(pane_text: str) -> str | None:
+    for pattern in WAIT_PATTERNS:
+        if re.search(pattern, pane_text):
+            return pattern
+    return None
+
+
+def _match_stall_pattern(pane_text: str) -> str | None:
+    for pattern in STALL_PATTERNS:
+        if re.search(pattern, pane_text):
+            return pattern
+    return None
+
+
+def _snippet_for_pattern(pane_text: str, pattern: str) -> str:
+    lines = [line.strip() for line in pane_text.splitlines() if line.strip()]
+    for line in reversed(lines):
+        if re.search(pattern, line.lower()):
+            return _truncate_snippet(line)
+    if lines:
+        return _truncate_snippet(lines[-1])
+    return ""
+
+
+def _truncate_snippet(text: str, limit: int = 160) -> str:
+    compact = " ".join(text.split())
+    if len(compact) <= limit:
+        return compact
+    return compact[: limit - 3] + "..."
+
+
+def _session_context(session: str) -> tuple[str, str]:
+    project_dir = config.get_mapping(session)
+    if not project_dir:
+        focus = config.get_focus()
+        if focus:
+            focus_dir = config.get_mapping(focus)
+            if focus_dir:
+                project_dir = f"{focus_dir} (focus:{focus})"
+    if not project_dir:
+        project_dir = "(unmapped)"
+    host = socket.gethostname()
+    return project_dir, host
+
+
+def _relay_status() -> str:
+    try:
+        with urllib.request.urlopen("http://127.0.0.1:8878/health", timeout=0.8) as resp:
+            body = resp.read().decode("utf-8", errors="ignore").lower()
+            if resp.status == 200 and '"status": "ok"' in body:
+                return "up"
+    except Exception:
+        pass
+    return "down"
+
+
+def _send_waiting_alert(
+    *,
+    session: str,
+    title: str,
+    reason: str,
+    detail: str,
+    severity: str,
+    status: str,
+    fingerprint_suffix: str,
+    snippet: str = "",
+) -> None:
+    project_dir, host = _session_context(session)
+    body = (
+        f"{reason}; session={session}; project={project_dir}; host={host}; detail={detail}"
+        f"; snippet={snippet or '(none)'}"
+    )
+    mac_notify(title, body)
+    discord_webhook(config.get_webhook(), f"**{title}**\n{body}")
+    alert_router_webhook(
+        config.get_alert_router(),
+        service_name=f"oc-watch:{session}",
+        severity=severity,
+        status=status,
+        host_name=host,
+        message=body,
+        fingerprint=f"oc-watch-{session}-{fingerprint_suffix}",
+    )
 
 
 def _fmt_cmds_for_shell(commands: Sequence[str]) -> str:
@@ -107,6 +216,8 @@ def cmd_focused(_: argparse.Namespace) -> int:
 def cmd_status(_: argparse.Namespace) -> int:
     focus = config.get_focus()
     webhook = config.get_webhook()
+    alert_router = config.get_alert_router()
+    relay_token = config.get_relay_token()
     m = config.load_mappings()
 
     print(f"focus:\t{focus or '(none)'}")
@@ -115,13 +226,19 @@ def cmd_status(_: argparse.Namespace) -> int:
     else:
         print("dir:\t(n/a)")
     print(f"webhook:\t{'set' if webhook else '(none)'}")
+    print(f"alert_router:\t{'set' if alert_router else '(none)'}")
+    print(f"relay_token:\t{'set' if relay_token else '(none)'}")
+    print(f"relay:\t{_relay_status()}")
 
-    if focus and tmux.has_session(focus):
-        last = tmux.pane_last_activity(focus, "main")
-        now = int(time.time())
-        delta = now - last if last > 0 else 0
-        print(f"idle_seconds:\t{delta}")
-    else:
+    try:
+        if focus and tmux.has_session(focus):
+            last = tmux.pane_last_activity(focus, "main")
+            now = int(time.time())
+            delta = now - last if last > 0 else 0
+            print(f"idle_seconds:\t{delta}")
+        else:
+            print("idle_seconds:\t(n/a)")
+    except tmux.TmuxError:
         print("idle_seconds:\t(n/a)")
     return 0
 
@@ -165,6 +282,22 @@ def cmd_attach(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_kill(args: argparse.Namespace) -> int:
+    session = _resolve_session(args.name)
+    if not session:
+        print("no session provided and nothing focused")
+        return 1
+    if not tmux.has_session(session):
+        print(f"session not found: {session}")
+        return 1
+
+    tmux.kill_session(session)
+    if config.get_focus() == session:
+        config.set_focus("")
+    print(f"killed: {session}")
+    return 0
+
+
 def cmd_watch(args: argparse.Namespace) -> int:
     # Watch focused session by default
     session = args.name or config.get_focus()
@@ -175,15 +308,55 @@ def cmd_watch(args: argparse.Namespace) -> int:
         print(f"session not found: {session}")
         return 1
 
+    pane_text = tmux.capture_last_lines(session, "main", lines=args.capture_lines)
+    pane_text_lc = pane_text.lower()
+
+    matched_pattern = _match_wait_pattern(pane_text_lc)
+    if matched_pattern:
+        snippet = _snippet_for_pattern(pane_text, matched_pattern)
+        _send_waiting_alert(
+            session=session,
+            title="OpenCode awaiting input",
+            reason="AI agent waiting for input",
+            detail=f"prompt pattern '{matched_pattern}' matched",
+            severity="warning",
+            status="degraded",
+            fingerprint_suffix="pattern",
+            snippet=snippet,
+        )
+        print(f"notified: {session}\tpattern={matched_pattern}")
+        return 0
+
     last = tmux.pane_last_activity(session, "main")
     now = int(time.time())
     delta = now - last if last > 0 else 0
 
+    matched_stall = _match_stall_pattern(pane_text_lc)
+    if matched_stall and delta >= args.idle_seconds:
+        snippet = _snippet_for_pattern(pane_text, matched_stall)
+        _send_waiting_alert(
+            session=session,
+            title="OpenCode stalled?",
+            reason="AI agent appears stalled",
+            detail=f"stall pattern '{matched_stall}' matched and idle for {delta}s",
+            severity="warning",
+            status="degraded",
+            fingerprint_suffix="stall",
+            snippet=snippet,
+        )
+        print(f"notified: {session}\tstall_pattern={matched_stall}\tidle={delta}s")
+        return 0
+
     if delta >= args.idle_seconds:
-        title = "OpenCode waiting?"
-        body = f"tmux:{session} idle for {delta}s (might be awaiting input)"
-        mac_notify(title, body)
-        discord_webhook(config.get_webhook(), f"**{title}**\n{body}")
+        _send_waiting_alert(
+            session=session,
+            title="OpenCode waiting?",
+            reason="No output detected",
+            detail=f"idle for {delta}s",
+            severity="info",
+            status="degraded",
+            fingerprint_suffix="idle",
+        )
         print(f"notified: {session}\tidle={delta}s")
     else:
         print(f"ok: {session}\tidle={delta}s")
@@ -193,6 +366,27 @@ def cmd_watch(args: argparse.Namespace) -> int:
 def cmd_set_webhook(args: argparse.Namespace) -> int:
     config.set_webhook(args.url)
     print("webhook set" if args.url else "webhook cleared")
+    return 0
+
+
+def cmd_set_alert_router(args: argparse.Namespace) -> int:
+    config.set_alert_router(args.url)
+    print("alert-router set" if args.url else "alert-router cleared")
+    return 0
+
+
+def cmd_set_relay_token(args: argparse.Namespace) -> int:
+    config.set_relay_token(args.token)
+    print("relay-token set" if args.token else "relay-token cleared")
+    return 0
+
+
+def cmd_relay(args: argparse.Namespace) -> int:
+    token = args.token or config.get_relay_token()
+    if not token:
+        print("missing relay token; run: oc set-relay-token <token>")
+        return 1
+    serve_relay(host=args.host, port=args.port, token=token)
     return 0
 
 
@@ -239,6 +433,10 @@ def cmd_completion(args: argparse.Namespace) -> int:
 def _bash_completion_script() -> str:
     cmds = _fmt_cmds_for_shell(COMMANDS)
     template = """# occtl bash completion
+_occtl_tmux_sessions() {
+  tmux list-sessions -F '#{session_name}' 2>/dev/null
+}
+
 _occtl_complete() {
   local cur prev
   COMPREPLY=()
@@ -250,11 +448,17 @@ _occtl_complete() {
     return 0
   fi
 
-  case "$prev" in
-    watch)
-      COMPREPLY+=( $(compgen -W "--name --idle-seconds" -- "$cur") )
+    case "$prev" in
+    attach|focus|kill)
+      COMPREPLY=( $(compgen -W "$(_occtl_tmux_sessions)" -- "$cur") )
       ;;
-    set-webhook)
+    watch)
+      COMPREPLY+=( $(compgen -W "--name --idle-seconds --capture-lines" -- "$cur") )
+      ;;
+    --name|--session)
+      COMPREPLY=( $(compgen -W "$(_occtl_tmux_sessions)" -- "$cur") )
+      ;;
+    set-webhook|set-alert-router|set-relay-token)
       return 0
       ;;
     completion)
@@ -274,17 +478,37 @@ def _zsh_completion_script() -> str:
 
 _occtl() {
   local -a commands
+  local -a sessions
   commands=(
     __CMD_LIST__
   )
+  sessions=(${(f)"$(tmux list-sessions -F '#{session_name}' 2>/dev/null)"})
 
-  _arguments -C \
-    '1: :->command' \
-    '*: :->args'
+  if (( CURRENT == 2 )); then
+    compadd -a commands
+    return
+  fi
 
-  case "$state" in
-    command)
-      compadd -a commands
+  case "$words[2]" in
+    attach|focus|kill)
+      compadd -a sessions
+      ;;
+    watch)
+      if [[ "$words[CURRENT-1]" == "--name" ]]; then
+        compadd -a sessions
+      else
+        compadd -- --name --idle-seconds --capture-lines
+      fi
+      ;;
+    say|enter)
+      if [[ "$words[CURRENT-1]" == "--session" ]]; then
+        compadd -a sessions
+      else
+        compadd -- --session
+      fi
+      ;;
+    completion)
+      compadd -- bash zsh fish
       ;;
   esac
 }
@@ -297,10 +521,17 @@ compdef _occtl oc
 def _fish_completion_script() -> str:
     cmds = _fmt_cmds_for_shell(COMMANDS)
     template = """# occtl fish completion
+function __occtl_tmux_sessions
+  tmux list-sessions -F '#{session_name}' 2>/dev/null
+end
+
 complete -c oc -f
 complete -c oc -n '__fish_use_subcommand' -a "{cmds}"
-complete -c oc -n "__fish_seen_subcommand_from watch" -l name -r
+complete -c oc -n "__fish_seen_subcommand_from attach focus kill" -a "(__occtl_tmux_sessions)"
+complete -c oc -n "__fish_seen_subcommand_from watch" -l name -r -a "(__occtl_tmux_sessions)"
 complete -c oc -n "__fish_seen_subcommand_from watch" -l idle-seconds -r
+complete -c oc -n "__fish_seen_subcommand_from watch" -l capture-lines -r
+complete -c oc -n "__fish_seen_subcommand_from say enter" -l session -r -a "(__occtl_tmux_sessions)"
 complete -c oc -n "__fish_seen_subcommand_from completion" -f -a "bash zsh fish"
     """
     return template.replace("{cmds}", cmds)
@@ -354,14 +585,36 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("name")
     sp.set_defaults(fn=cmd_attach)
 
-    sp = sub.add_parser("watch", help="idle-based waiting alert (focused session by default)")
+    sp = sub.add_parser("kill", help="kill a session (focused session by default)")
+    sp.add_argument("name", nargs="?", default=None)
+    sp.set_defaults(fn=cmd_kill)
+
+    sp = sub.add_parser("watch", help="prompt-aware waiting alert (focused session by default)")
     sp.add_argument("--name", default=None)
     sp.add_argument("--idle-seconds", type=int, default=90)
+    sp.add_argument("--capture-lines", type=int, default=120)
     sp.set_defaults(fn=cmd_watch)
 
     sp = sub.add_parser("set-webhook", help="set Discord webhook URL for alerts (optional)")
     sp.add_argument("url")
     sp.set_defaults(fn=cmd_set_webhook)
+
+    sp = sub.add_parser(
+        "set-alert-router",
+        help="set homelab alert-router webhook URL for alerts (optional)",
+    )
+    sp.add_argument("url")
+    sp.set_defaults(fn=cmd_set_alert_router)
+
+    sp = sub.add_parser("set-relay-token", help="set token used by oc relay API")
+    sp.add_argument("token")
+    sp.set_defaults(fn=cmd_set_relay_token)
+
+    sp = sub.add_parser("relay", help="run local relay API for Discord button actions")
+    sp.add_argument("--host", default="0.0.0.0")
+    sp.add_argument("--port", type=int, default=8878)
+    sp.add_argument("--token", default="")
+    sp.set_defaults(fn=cmd_relay)
 
     sp = sub.add_parser("voice", help="parse a voice phrase and execute (Shortcuts)")
     sp.add_argument("phrase", nargs="+")
@@ -379,7 +632,11 @@ def main() -> None:
     parser = build_parser()
     parser.set_defaults(fn=cmd_status)
     args = parser.parse_args()
-    rc = args.fn(args)
+    try:
+        rc = args.fn(args)
+    except tmux.TmuxError as e:
+        print(str(e))
+        rc = 1
     raise SystemExit(rc)
 
 

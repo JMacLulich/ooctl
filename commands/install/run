@@ -10,13 +10,75 @@ usage() {
   cat "${RUN_CMD_DIR}/desc"
 }
 
+append_line_if_missing() {
+  local path="$1"
+  local line="$2"
+
+  touch "$path"
+  if ! grep -Fqx "$line" "$path"; then
+    printf "\n%s\n" "$line" >> "$path"
+  fi
+}
+
 install_launcher() {
   local target_dir="${HOME}/bin"
   local target_path="$target_dir/oc"
 
   mkdir -p "$target_dir"
   ln -sf "$PROJECT_BIN" "$target_path"
-  echo "Created launcher: $target_path"
+  echo "Installed launcher: $target_path"
+}
+
+ensure_tmux() {
+  if command -v tmux >/dev/null 2>&1; then
+    echo "tmux already available"
+    return 0
+  fi
+
+  if command -v brew >/dev/null 2>&1; then
+    echo "tmux not found; installing with Homebrew..."
+    brew install tmux
+  else
+    echo "tmux is required but not installed."
+    echo "Install Homebrew from https://brew.sh, then run: brew install tmux"
+    exit 1
+  fi
+
+  if ! command -v tmux >/dev/null 2>&1; then
+    echo "tmux install appears to have failed."
+    exit 1
+  fi
+
+  echo "Installed tmux"
+}
+
+install_completions() {
+  local bash_dir
+  local fish_dir
+  local zsh_dir
+  local zshrc="${HOME}/.zshrc"
+  local bashrc="${HOME}/.bashrc"
+  local bash_completion_path
+
+  bash_dir="${XDG_DATA_HOME:-$HOME/.config}/occtl/completion"
+  fish_dir="${XDG_CONFIG_HOME:-$HOME/.config}/fish/completions"
+  zsh_dir="${HOME}/.zsh/completion"
+  bash_completion_path="$bash_dir/oc.bash"
+
+  mkdir -p "$bash_dir" "$fish_dir" "$zsh_dir"
+
+  "$PROJECT_BIN" completion bash > "$bash_completion_path"
+  append_line_if_missing "$bashrc" "test -f \"$bash_completion_path\" && . \"$bash_completion_path\""
+  echo "Installed bash completion: $bash_completion_path"
+
+  "$PROJECT_BIN" completion zsh > "$zsh_dir/_oc"
+  append_line_if_missing "$zshrc" 'fpath=($HOME/.zsh/completion $fpath)'
+  append_line_if_missing "$zshrc" 'autoload -Uz compinit && compinit'
+  append_line_if_missing "$zshrc" '[[ -f "$HOME/.zsh/completion/_oc" ]] && source "$HOME/.zsh/completion/_oc"'
+  echo "Installed zsh completion: $zsh_dir/_oc"
+
+  "$PROJECT_BIN" completion fish > "$fish_dir/oc.fish"
+  echo "Installed fish completion: $fish_dir/oc.fish"
 }
 
 case "${1-}" in
@@ -26,22 +88,22 @@ case "${1-}" in
     usage
     exit 0
     ;;
-  --bin)
-    install_launcher
-    ;;
   *)
-    echo "Usage: ./run install [--bin]"
-    echo "  --bin: also install a ./oc launcher into ~/bin/oc"
+    echo "Usage: ./run install"
     exit 1
     ;;
 esac
 
+ensure_tmux
+
 "$PYTHON_BIN" -m pip install -e .[dev]
 echo "Installed occtl in ${RUN_VENV_DIR:-local environment}."
+
+install_launcher
+install_completions
+
+echo "Install complete."
 if [[ -f "$PROJECT_BIN" && -x "$PROJECT_BIN" ]]; then
-  echo "Use from this repo: ./oc status"
+  echo "Local launcher: ./oc status"
 fi
-if [[ "${1-}" == "--bin" ]]; then
-  echo "Also installed global launcher: ~/bin/oc"
-  echo "Run: export PATH=\"\$HOME/bin:\$PATH\""
-fi
+echo "To enable completion in this shell, restart it or source ~/.bashrc or ~/.zshrc."

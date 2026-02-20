@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
+
 set -euo pipefail
 
-python3 -m pip install -e .[dev]
-echo "Installed occtl in your Python environment."
-echo "To run from this project: ./oc status"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+"$SCRIPT_DIR/run" install

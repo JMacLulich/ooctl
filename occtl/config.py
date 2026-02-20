@@ -14,7 +14,16 @@ def ensure_config_dir() -> None:
         MAPPINGS_FILE.write_text("[map]\n", encoding="utf-8")
     if not STATE_FILE.exists():
         STATE_FILE.write_text(
-            json.dumps({"focus": "", "webhook_url": ""}, indent=2), encoding="utf-8"
+            json.dumps(
+                {
+                    "focus": "",
+                    "webhook_url": "",
+                    "alert_router_url": "",
+                    "relay_token": "",
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
         )
 
 
@@ -48,6 +57,28 @@ def set_webhook(url: str) -> None:
 def get_webhook() -> str:
     state = load_state()
     return (state.get("webhook_url") or "").strip()
+
+
+def set_alert_router(url: str) -> None:
+    state = load_state()
+    state["alert_router_url"] = url.strip()
+    save_state(state)
+
+
+def get_alert_router() -> str:
+    state = load_state()
+    return (state.get("alert_router_url") or "").strip()
+
+
+def set_relay_token(token: str) -> None:
+    state = load_state()
+    state["relay_token"] = token.strip()
+    save_state(state)
+
+
+def get_relay_token() -> str:
+    state = load_state()
+    return (state.get("relay_token") or "").strip()
 
 
 def _parse_toml_map(text: str) -> dict[str, str]:

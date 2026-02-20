@@ -1,5 +1,6 @@
-Install the project in editable mode with dev dependencies.
+Install tmux if missing (Homebrew), then install the project in editable mode with
+dev dependencies, set up shell autocomplete for bash, zsh, and fish, and install a
+local launcher.
 
 Usage:
   ./run install
-  ./run install --bin   # also create ~/bin/oc launcher

@@ -16,11 +16,29 @@ def test_parse_voice_switch_to_session() -> None:
     assert intent.session == "infra"
 
 
+def test_parse_voice_switch_to_spaced_session() -> None:
+    intent = parse_voice("switch to gig guide")
+    assert intent.action == "focus"
+    assert intent.session == "gig guide"
+
+
+def test_parse_voice_start_session() -> None:
+    intent = parse_voice("start gig guide")
+    assert intent.action == "new"
+    assert intent.session == "gig guide"
+
+
 def test_parse_voice_tell_session() -> None:
     intent = parse_voice("tell infra run terraform plan")
     assert intent.action == "say"
     assert intent.session == "infra"
     assert intent.text == "run terraform plan"
+
+
+def test_parse_voice_open_spaced_session() -> None:
+    intent = parse_voice("open gig guide")
+    assert intent.action == "attach_or_focus"
+    assert intent.session == "gig guide"
 
 
 def test_parse_voice_default_to_focused_session() -> None:

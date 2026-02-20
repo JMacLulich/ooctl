@@ -36,9 +36,10 @@ occtl is a small CLI that:
 ## Install (macOS)
 
 Prereqs:
-- `tmux` installed
 - OpenCode installed and runnable as `opencode`
 - Python 3.10+
+
+`./run install` will install `tmux` automatically via Homebrew if it is missing.
 
 Install in editable mode (recommended):
 ```bash
@@ -50,6 +51,7 @@ Install in editable mode (recommended):
 ```bash
 oc map infra ~/src/homelab
 oc map finance ~/src/cashclaw
+oc map "gig guide" ~/src/gig-folder
 ```
 
 List mappings:
@@ -81,6 +83,7 @@ oc say "run tests and summarize failures"  # send text to focused session
 oc enter                 # send Enter to focused session
 oc status                # focus + mapped dir + idle seconds
 oc attach infra          # interactive attach (best from Termius)
+oc kill infra            # terminate a session (or: oc kill for focused)
 ```
 
 ## Voice-first workflow (recommended)
@@ -93,9 +96,11 @@ oc attach infra          # interactive attach (best from Termius)
 Typical flow:
 
 1. "Hey Siri, AI Command" -> "focus infra"
-2. "Hey Siri, AI Command" -> "run tests and summarize failures"
-3. "Hey Siri, AI Command" -> "continue"
-4. Open Termius only if you want to see the screen.
+2. "Hey Siri, AI Command" -> "open gig guide"
+3. "Hey Siri, AI Command" -> "run tests and summarize failures"
+4. "Hey Siri, AI Command" -> "continue"
+5. Open Termius only if you want to see the screen.
+6. "Hey Siri, AI Command" -> "start cash claw"
 
 ## Siri Shortcuts setup (ONE shortcut)
 
@@ -154,7 +159,6 @@ finance = "/Users/jason/src/cashclaw"
 ```
 
 ## Scripts
-- `scripts/install.sh`: install package
 - `scripts/install_launchd.sh`: install launchd watcher
 
 ### Development
@@ -170,8 +174,8 @@ finance = "/Users/jason/src/cashclaw"
 
 1. Install
    ```bash
-   ./scripts/install.sh
-   ```
+    ./run install
+    ```
 2. Add mappings
    ```bash
    oc map infra ~/src/homelab
@@ -223,10 +227,10 @@ Tip:
 oc                  # no args = status
 ```
 
-If you want `oc` on PATH, install the local launcher into `~/bin`:
+`./run install` also creates a local launcher at `~/bin/oc`.
 
 ```bash
-./run install --bin
+./run install
 export PATH="${HOME}/bin:$PATH"
 oc status
 ```
@@ -239,31 +243,18 @@ Inspect tooling environment:
 
 ## Shell autocomplete
 
-Generate a completion script for your shell:
+Completions are now installed automatically by `./run install`.
 
 ```bash
-oc completion bash
-oc completion zsh
-oc completion fish
-```
-
-Quick setup for zsh:
-
-```bash
-mkdir -p ~/.zsh/completion
-oc completion zsh > ~/.zsh/completion/_oc
-echo 'fpath=(~/.zsh/completion $fpath)' >> ~/.zshrc
-echo 'autoload -Uz compinit && compinit' >> ~/.zshrc
-source ~/.zshrc
-```
-
-Quick setup for bash:
-
-```bash
-oc completion bash > ~/.bash_completion
-source ~/.bash_completion
+oc   # tab-complete works after restarting your shell
 ```
 
 Tip:
 
-- In zsh, type `oc` and `<TAB><TAB>` to complete `map|maps|new|...`
+- In bash/zsh/fish, type `oc` and `<TAB><TAB>` to complete `map|maps|new|...`
+- Session names with spaces need shell quoting, for example:
+
+  ```bash
+  oc map "gig guide" ~/src/gig-folder
+  oc new "gig guide"
+  ```
