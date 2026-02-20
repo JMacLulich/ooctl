@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import shutil
 import socket
@@ -362,6 +363,33 @@ def _menu_row(text: str, inner_width: int) -> str:
     return "|" + _fit_text(text, inner_width).ljust(inner_width) + "|"
 
 
+def _supports_color() -> bool:
+    if not sys.stdout.isatty():
+        return False
+    if os.environ.get("NO_COLOR"):
+        return False
+    term = os.environ.get("TERM", "")
+    return term != "dumb"
+
+
+def _colorize(text: str, code: str) -> str:
+    if not _supports_color():
+        return text
+    return f"\033[{code}m{text}\033[0m"
+
+
+def _session_idle_seconds(name: str) -> int | None:
+    try:
+        if not tmux.has_session(name):
+            return None
+        last = tmux.pane_last_activity(name, "main")
+        if last <= 0:
+            return 0
+        return max(0, int(time.time()) - last)
+    except tmux.TmuxError:
+        return None
+
+
 def _session_status_text(row: dict[str, object]) -> str:
     if row["exit"]:
         return ""
@@ -410,8 +438,9 @@ def _render_attach_menu(rows: list[dict[str, object]], idx: int) -> None:
             continue
 
         state = "RUNNING" if bool(row["running"]) else "STOPPED"
+        state_rendered = _colorize(state, "32") if state == "RUNNING" else _colorize(state, "31")
         name = _fit_text(str(row["name"]), name_w)
-        line = _menu_row(f" {cursor} {name.ljust(name_w)}  {state}", inner)
+        line = _menu_row(f" {cursor} {name.ljust(name_w)}  {state_rendered}", inner)
         if selected:
             print(f"\033[7m{line}\033[0m")
         else:
@@ -425,7 +454,12 @@ def _render_attach_menu(rows: list[dict[str, object]], idx: int) -> None:
     else:
         mapped = _compact_path(str(selected["mapped_dir"]))
         action = "attach" if bool(selected["running"]) else "start+attach"
-        footer = f" Session: {selected['name']} | Action: {action} | Project: {mapped} "
+        idle = _session_idle_seconds(str(selected["name"])) if bool(selected["running"]) else None
+        idle_text = f"{idle}s" if idle is not None else "n/a"
+        footer = (
+            f" Session: {selected['name']} | Action: {action} | Idle: {idle_text}"
+            f" | Project: {mapped} "
+        )
     print(_menu_row(footer, inner))
     print(_menu_border(inner))
 
