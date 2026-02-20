@@ -75,6 +75,7 @@ def test_main_handles_tmux_error(monkeypatch, capsys) -> None:
 
 
 def test_cmd_status_prints_relay_state(monkeypatch, capsys) -> None:
+    project_path = str(Path("/tmp") / "audience" / "prs" / "EC-3620" / "server")
     monkeypatch.setattr(cli.config, "get_focus", lambda: "filter2")
     monkeypatch.setattr(cli.config, "get_webhook", lambda: "")
     monkeypatch.setattr(
@@ -84,7 +85,7 @@ def test_cmd_status_prints_relay_state(monkeypatch, capsys) -> None:
     monkeypatch.setattr(
         cli.config,
         "load_mappings",
-        lambda: {"filter2": "/Users/jasonmaclulich/dev/audience/prs/EC-3620/server"},
+        lambda: {"filter2": project_path},
     )
     monkeypatch.setattr(cli.tmux, "has_session", lambda _: False)
     monkeypatch.setattr(cli, "_relay_status", lambda: "up")
@@ -187,6 +188,13 @@ def test_attach_menu_contains_exit_option(monkeypatch) -> None:
 def test_fit_text_truncates_with_ellipsis() -> None:
     assert cli._fit_text("abcdefghijklmnopqrstuvwxyz", 10) == "abcdefg..."
     assert cli._fit_text("short", 10) == "short"
+
+
+def test_compact_path_shortens_long_path(monkeypatch) -> None:
+    monkeypatch.setattr(cli.Path, "home", lambda: Path("/home/testuser"))
+    out = cli._compact_path("/home/testuser/projects/audience/prs/EC-3620/server")
+    assert out.endswith("/prs/EC-3620/server")
+    assert out.startswith(".../")
 
 
 def test_match_wait_pattern_detects_prompt() -> None:

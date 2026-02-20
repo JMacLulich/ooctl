@@ -342,6 +342,18 @@ def _fit_text(text: str, width: int) -> str:
     return text[: width - 3] + "..."
 
 
+def _compact_path(path: str, max_segments: int = 3) -> str:
+    if not path:
+        return "(unmapped)"
+    home = str(Path.home())
+    shown = path.replace(home, "~")
+    parts = shown.split("/")
+    if len(parts) <= max_segments + 1:
+        return shown
+    tail = "/".join(parts[-max_segments:])
+    return f".../{tail}"
+
+
 def _menu_border(inner_width: int) -> str:
     return "+" + ("-" * inner_width) + "+"
 
@@ -366,26 +378,54 @@ def _session_status_text(row: dict[str, object]) -> str:
 def _render_attach_menu(rows: list[dict[str, object]], idx: int) -> None:
     print("\033[2J\033[H", end="")
     cols = shutil.get_terminal_size(fallback=(100, 30)).columns
-    inner = max(60, min(110, cols - 2))
+    inner = max(72, min(120, cols - 2))
+    name_w = max(14, int(inner * 0.24))
+    state_w = 8
+    flags_w = 14
+    win_w = 5
+    path_w = inner - (name_w + state_w + flags_w + win_w + 12)
+
+    def _table_row(name: str, state: str, flags: str, win: str, path: str) -> str:
+        c_name = _fit_text(name, name_w).ljust(name_w)
+        c_state = _fit_text(state, state_w).ljust(state_w)
+        c_flags = _fit_text(flags, flags_w).ljust(flags_w)
+        c_win = _fit_text(win, win_w).rjust(win_w)
+        c_path = _fit_text(path, path_w).ljust(path_w)
+        return f"| {c_name} | {c_state} | {c_flags} | {c_win} | {c_path} |"
+
     print(_menu_border(inner))
-    print(_menu_row("OC SESSION MANAGER", inner))
+    print(_menu_row(" OC SESSION MANAGER ", inner))
     print(_menu_border(inner))
-    print(_menu_row("Keys: Up/Down or j/k | Enter attach/start | q/Esc exit", inner))
+    print(_menu_row(" Up/Down or j/k: move   Enter: attach/start   q/Esc: exit ", inner))
+    print(_menu_border(inner))
+    print(_table_row("SESSION", "STATE", "FLAGS", "WIN", "PROJECT"))
     print(_menu_border(inner))
 
     for i, row in enumerate(rows):
-        cursor = ">" if i == idx else " "
         if row["exit"]:
-            print(_menu_row(f"{cursor} Exit", inner))
+            line = _table_row("Exit", "", "", "", "")
+            if i == idx:
+                print(f"\033[7m{line}\033[0m")
+            else:
+                print(line)
             continue
 
-        status = _session_status_text(row)
-        mapped = row["mapped_dir"] or "(unmapped)"
-
-        left = f"{cursor} {row['name']}"
-        line = f"{left}  [{status}]" if status else left
-        print(_menu_row(line, inner))
-        print(_menu_row(f"    {mapped}", inner))
+        flags: list[str] = []
+        if row["focused"]:
+            flags.append("FOCUS")
+        if row["attached"]:
+            flags.append("ATTACHED")
+        line = _table_row(
+            str(row["name"]),
+            "RUNNING" if bool(row["running"]) else "STOPPED",
+            ",".join(flags) if flags else "-",
+            str(row["windows"] if bool(row["running"]) else "-"),
+            _compact_path(str(row["mapped_dir"])),
+        )
+        if i == idx:
+            print(f"\033[7m{line}\033[0m")
+        else:
+            print(line)
 
     print(_menu_border(inner))
 
