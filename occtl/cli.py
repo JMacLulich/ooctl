@@ -378,7 +378,16 @@ def _session_status_text(row: dict[str, object]) -> str:
 def _render_attach_menu(rows: list[dict[str, object]], idx: int) -> None:
     print("\033[2J\033[H", end="")
     cols = shutil.get_terminal_size(fallback=(100, 30)).columns
-    inner = max(64, min(100, cols - 2))
+    # Keep menu narrower than terminal to avoid wrapping/stair-stepping on Termius,
+    # while never exceeding available width on narrow terminals.
+    menu_min_width = 56
+    menu_max_width = 88
+    side_padding = 8
+    available = max(0, cols - side_padding)
+    inner = min(menu_max_width, available)
+    if inner < menu_min_width:
+        inner = max(20, cols - 2)
+    inner = min(inner, max(0, cols - 2))
     name_w = max(20, min(42, inner - 22))
 
     print(_menu_border(inner))
