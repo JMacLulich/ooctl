@@ -314,8 +314,20 @@ def _build_attach_menu_rows() -> list[dict[str, object]]:
                 "attached": bool(live and live["attached"]),
                 "windows": int(live["windows"]) if live else 0,
                 "focused": name == focus,
+                "exit": False,
             }
         )
+    rows.append(
+        {
+            "name": "Exit",
+            "mapped_dir": "",
+            "running": False,
+            "attached": False,
+            "windows": 0,
+            "focused": False,
+            "exit": True,
+        }
+    )
     return rows
 
 
@@ -326,6 +338,9 @@ def _render_attach_menu(rows: list[dict[str, object]], idx: int) -> None:
 
     for i, row in enumerate(rows):
         cursor = ">" if i == idx else " "
+        if row["exit"]:
+            print(f"{cursor} Exit")
+            continue
         status = "RUNNING" if row["running"] else "STOPPED"
         focus = " FOCUS" if row["focused"] else ""
         attached = " ATTACHED" if row["attached"] else ""
@@ -381,6 +396,8 @@ def _choose_attach_session_interactive() -> str | None:
                 idx = (idx + 1) % len(rows)
             elif key == "enter":
                 print("\033[2J\033[H", end="")
+                if rows[idx]["exit"]:
+                    return None
                 return str(rows[idx]["name"])
             elif key in {"quit", "esc"}:
                 print("\033[2J\033[H", end="")

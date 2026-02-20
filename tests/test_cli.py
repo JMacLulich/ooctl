@@ -173,6 +173,17 @@ def test_cmd_attach_starts_mapped_session_when_not_running(monkeypatch) -> None:
     assert called["attach"] == "gig guide"
 
 
+def test_attach_menu_contains_exit_option(monkeypatch) -> None:
+    monkeypatch.setattr(cli.config, "load_mappings", lambda: {"filter2": "/tmp/filter2"})
+    monkeypatch.setattr(cli.tmux, "list_sessions", lambda: [])
+    monkeypatch.setattr(cli.config, "get_focus", lambda: "")
+
+    rows = cli._build_attach_menu_rows()
+
+    assert rows[-1]["name"] == "Exit"
+    assert rows[-1]["exit"] is True
+
+
 def test_match_wait_pattern_detects_prompt() -> None:
     pane = "Agent paused\n? Continue (y/n):"
     assert cli._match_wait_pattern(pane.lower()) == r"\bcontinue\b"
