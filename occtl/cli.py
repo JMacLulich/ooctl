@@ -378,55 +378,46 @@ def _session_status_text(row: dict[str, object]) -> str:
 def _render_attach_menu(rows: list[dict[str, object]], idx: int) -> None:
     print("\033[2J\033[H", end="")
     cols = shutil.get_terminal_size(fallback=(100, 30)).columns
-    inner = max(72, min(120, cols - 2))
-    name_w = max(14, int(inner * 0.24))
-    state_w = 8
-    flags_w = 14
-    win_w = 5
-    path_w = inner - (name_w + state_w + flags_w + win_w + 12)
-
-    def _table_row(name: str, state: str, flags: str, win: str, path: str) -> str:
-        c_name = _fit_text(name, name_w).ljust(name_w)
-        c_state = _fit_text(state, state_w).ljust(state_w)
-        c_flags = _fit_text(flags, flags_w).ljust(flags_w)
-        c_win = _fit_text(win, win_w).rjust(win_w)
-        c_path = _fit_text(path, path_w).ljust(path_w)
-        return f"| {c_name} | {c_state} | {c_flags} | {c_win} | {c_path} |"
+    inner = max(64, min(100, cols - 2))
+    name_w = max(20, min(42, inner - 22))
 
     print(_menu_border(inner))
     print(_menu_row(" OC SESSION MANAGER ", inner))
     print(_menu_border(inner))
     print(_menu_row(" Up/Down or j/k: move   Enter: attach/start   q/Esc: exit ", inner))
     print(_menu_border(inner))
-    print(_table_row("SESSION", "STATE", "FLAGS", "WIN", "PROJECT"))
+    print(_menu_row(" SESSION".ljust(name_w + 2) + "STATE", inner))
     print(_menu_border(inner))
 
     for i, row in enumerate(rows):
+        selected = i == idx
+        cursor = ">" if selected else " "
         if row["exit"]:
-            line = _table_row("Exit", "", "", "", "")
-            if i == idx:
+            line = _menu_row(f" {cursor} Exit", inner)
+            if selected:
                 print(f"\033[7m{line}\033[0m")
             else:
                 print(line)
             continue
 
-        flags: list[str] = []
-        if row["focused"]:
-            flags.append("FOCUS")
-        if row["attached"]:
-            flags.append("ATTACHED")
-        line = _table_row(
-            str(row["name"]),
-            "RUNNING" if bool(row["running"]) else "STOPPED",
-            ",".join(flags) if flags else "-",
-            str(row["windows"] if bool(row["running"]) else "-"),
-            _compact_path(str(row["mapped_dir"])),
-        )
-        if i == idx:
+        state = "RUNNING" if bool(row["running"]) else "STOPPED"
+        name = _fit_text(str(row["name"]), name_w)
+        line = _menu_row(f" {cursor} {name.ljust(name_w)}  {state}", inner)
+        if selected:
             print(f"\033[7m{line}\033[0m")
         else:
             print(line)
 
+    print(_menu_border(inner))
+
+    selected = rows[idx]
+    if selected["exit"]:
+        footer = " Exit without attaching "
+    else:
+        mapped = _compact_path(str(selected["mapped_dir"]))
+        action = "attach" if bool(selected["running"]) else "start+attach"
+        footer = f" Session: {selected['name']} | Action: {action} | Project: {mapped} "
+    print(_menu_row(footer, inner))
     print(_menu_border(inner))
 
 
