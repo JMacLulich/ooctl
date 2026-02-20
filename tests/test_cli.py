@@ -184,6 +184,11 @@ def test_attach_menu_contains_exit_option(monkeypatch) -> None:
     assert rows[-1]["exit"] is True
 
 
+def test_fit_text_truncates_with_ellipsis() -> None:
+    assert cli._fit_text("abcdefghijklmnopqrstuvwxyz", 10) == "abcdefg..."
+    assert cli._fit_text("short", 10) == "short"
+
+
 def test_match_wait_pattern_detects_prompt() -> None:
     pane = "Agent paused\n? Continue (y/n):"
     assert cli._match_wait_pattern(pane.lower()) == r"\bcontinue\b"

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import re
+import shutil
 import socket
 import sys
 import termios
@@ -331,23 +332,62 @@ def _build_attach_menu_rows() -> list[dict[str, object]]:
     return rows
 
 
+def _fit_text(text: str, width: int) -> str:
+    if width <= 0:
+        return ""
+    if len(text) <= width:
+        return text
+    if width <= 3:
+        return text[:width]
+    return text[: width - 3] + "..."
+
+
+def _menu_border(inner_width: int) -> str:
+    return "+" + ("-" * inner_width) + "+"
+
+
+def _menu_row(text: str, inner_width: int) -> str:
+    return "|" + _fit_text(text, inner_width).ljust(inner_width) + "|"
+
+
+def _session_status_text(row: dict[str, object]) -> str:
+    if row["exit"]:
+        return ""
+    parts = ["RUNNING" if row["running"] else "STOPPED"]
+    if row["focused"]:
+        parts.append("FOCUS")
+    if row["attached"]:
+        parts.append("ATTACHED")
+    if row["running"]:
+        parts.append(f"WIN:{row['windows']}")
+    return " ".join(parts)
+
+
 def _render_attach_menu(rows: list[dict[str, object]], idx: int) -> None:
     print("\033[2J\033[H", end="")
-    print("OpenCode Sessions")
-    print("Use ↑/↓ (or j/k), Enter to attach/start, q to cancel\n")
+    cols = shutil.get_terminal_size(fallback=(100, 30)).columns
+    inner = max(60, min(110, cols - 2))
+    print(_menu_border(inner))
+    print(_menu_row("OC SESSION MANAGER", inner))
+    print(_menu_border(inner))
+    print(_menu_row("Keys: Up/Down or j/k | Enter attach/start | q/Esc exit", inner))
+    print(_menu_border(inner))
 
     for i, row in enumerate(rows):
         cursor = ">" if i == idx else " "
         if row["exit"]:
-            print(f"{cursor} Exit")
+            print(_menu_row(f"{cursor} Exit", inner))
             continue
-        status = "RUNNING" if row["running"] else "STOPPED"
-        focus = " FOCUS" if row["focused"] else ""
-        attached = " ATTACHED" if row["attached"] else ""
+
+        status = _session_status_text(row)
         mapped = row["mapped_dir"] or "(unmapped)"
-        extra = f" windows={row['windows']}" if row["running"] else ""
-        print(f"{cursor} {row['name']}  [{status}{focus}{attached}]{extra}")
-        print(f"    {mapped}")
+
+        left = f"{cursor} {row['name']}"
+        line = f"{left}  [{status}]" if status else left
+        print(_menu_row(line, inner))
+        print(_menu_row(f"    {mapped}", inner))
+
+    print(_menu_border(inner))
 
 
 def _read_menu_key() -> str:
