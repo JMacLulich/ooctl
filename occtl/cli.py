@@ -11,6 +11,7 @@ import time
 import tty
 import urllib.request
 from collections.abc import Sequence
+from datetime import datetime
 from pathlib import Path
 
 from . import config, tmux
@@ -55,6 +56,8 @@ STALL_PATTERNS = (
     r"planning phase\s+\d+",
     r"spawning planner\.{0,3}",
 )
+
+ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 
 def _match_wait_pattern(pane_text: str) -> str | None:
@@ -360,7 +363,11 @@ def _menu_border(inner_width: int) -> str:
 
 
 def _menu_row(text: str, inner_width: int) -> str:
-    return "|" + _fit_text(text, inner_width).ljust(inner_width) + "|"
+    visible = len(ANSI_RE.sub("", text))
+    if visible > inner_width:
+        text = _fit_text(ANSI_RE.sub("", text), inner_width)
+        visible = len(text)
+    return "|" + text + (" " * max(0, inner_width - visible)) + "|"
 
 
 def _supports_color() -> bool:
@@ -388,6 +395,13 @@ def _session_idle_seconds(name: str) -> int | None:
         return max(0, int(time.time()) - last)
     except tmux.TmuxError:
         return None
+
+
+def _attach_banner_text() -> str:
+    host = socket.gethostname()
+    focus = config.get_focus() or "(none)"
+    now = datetime.now().strftime("%H:%M")
+    return f" Host: {host} | Focus: {focus} | {now} "
 
 
 def _session_status_text(row: dict[str, object]) -> str:
@@ -420,10 +434,11 @@ def _render_attach_menu(rows: list[dict[str, object]], idx: int) -> None:
 
     print(_menu_border(inner))
     print(_menu_row(" OC SESSION MANAGER ", inner))
+    print(_menu_row(_attach_banner_text(), inner))
     print(_menu_border(inner))
     print(_menu_row(" Up/Down or j/k: move   Enter: attach/start   q/Esc: exit ", inner))
     print(_menu_border(inner))
-    print(_menu_row(" SESSION".ljust(name_w + 2) + "STATE", inner))
+    print(_menu_row("   SESSION".ljust(name_w + 5) + "STATE", inner))
     print(_menu_border(inner))
 
     for i, row in enumerate(rows):
