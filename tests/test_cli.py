@@ -133,15 +133,21 @@ def test_cmd_attach_uses_interactive_choice_when_name_missing(monkeypatch) -> No
     monkeypatch.setattr(cli, "_choose_attach_session_interactive", lambda: "filter2")
     monkeypatch.setattr(cli.tmux, "has_session", lambda name: name == "filter2")
 
-    called: dict[str, str | None] = {"focus": None, "attach": None}
+    called: dict[str, str | None] = {"focus": None, "attach": None, "recent": None}
 
     monkeypatch.setattr(cli.config, "set_focus", lambda name: called.__setitem__("focus", name))
+    monkeypatch.setattr(
+        cli.config,
+        "touch_recent_attach",
+        lambda name: called.__setitem__("recent", name),
+    )
     monkeypatch.setattr(cli.tmux, "attach", lambda name: called.__setitem__("attach", name))
 
     rc = cli.cmd_attach(argparse.Namespace(name=None))
 
     assert rc == 0
     assert called["focus"] == "filter2"
+    assert called["recent"] == "filter2"
     assert called["attach"] == "filter2"
 
 
@@ -162,8 +168,13 @@ def test_cmd_attach_starts_mapped_session_when_not_running(monkeypatch) -> None:
     monkeypatch.setattr(cli.tmux, "has_session", _has_session)
     monkeypatch.setattr(cli, "cmd_new", _cmd_new)
 
-    called: dict[str, str | None] = {"focus": None, "attach": None}
+    called: dict[str, str | None] = {"focus": None, "attach": None, "recent": None}
     monkeypatch.setattr(cli.config, "set_focus", lambda name: called.__setitem__("focus", name))
+    monkeypatch.setattr(
+        cli.config,
+        "touch_recent_attach",
+        lambda name: called.__setitem__("recent", name),
+    )
     monkeypatch.setattr(cli.tmux, "attach", lambda name: called.__setitem__("attach", name))
 
     rc = cli.cmd_attach(argparse.Namespace(name=None))
@@ -171,7 +182,28 @@ def test_cmd_attach_starts_mapped_session_when_not_running(monkeypatch) -> None:
     assert rc == 0
     assert started["value"] is True
     assert called["focus"] == "gig guide"
+    assert called["recent"] == "gig guide"
     assert called["attach"] == "gig guide"
+
+
+def test_attach_menu_sorts_recent_sessions_first(monkeypatch) -> None:
+    monkeypatch.setattr(
+        cli.config,
+        "load_mappings",
+        lambda: {
+            "alpha": "/tmp/alpha",
+            "beta": "/tmp/beta",
+            "charlie": "/tmp/charlie",
+        },
+    )
+    monkeypatch.setattr(cli.tmux, "list_sessions", lambda: [])
+    monkeypatch.setattr(cli.config, "get_focus", lambda: "")
+    monkeypatch.setattr(cli.config, "get_recent_attaches", lambda: ["charlie", "alpha"])
+
+    rows = cli._build_attach_menu_rows()
+
+    ordered_names = [str(row["name"]) for row in rows if not row["exit"]]
+    assert ordered_names == ["charlie", "alpha", "beta"]
 
 
 def test_attach_menu_contains_exit_option(monkeypatch) -> None:

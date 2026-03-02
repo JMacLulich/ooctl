@@ -20,6 +20,7 @@ def ensure_config_dir() -> None:
                     "webhook_url": "",
                     "alert_router_url": "",
                     "relay_token": "",
+                    "recent_attaches": [],
                 },
                 indent=2,
             ),
@@ -79,6 +80,43 @@ def set_relay_token(token: str) -> None:
 def get_relay_token() -> str:
     state = load_state()
     return (state.get("relay_token") or "").strip()
+
+
+def _coerce_recent_attaches(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for entry in value:
+        if not isinstance(entry, str):
+            continue
+        name = entry.strip()
+        if not name or name in seen:
+            continue
+        out.append(name)
+        seen.add(name)
+    return out
+
+
+def get_recent_attaches() -> list[str]:
+    state = load_state()
+    recent = _coerce_recent_attaches(state.get("recent_attaches"))
+    if state.get("recent_attaches") != recent:
+        state["recent_attaches"] = recent
+        save_state(state)
+    return recent
+
+
+def touch_recent_attach(name: str, max_entries: int = 20) -> None:
+    session = name.strip()
+    if not session:
+        return
+    state = load_state()
+    recent = _coerce_recent_attaches(state.get("recent_attaches"))
+    recent = [entry for entry in recent if entry != session]
+    recent.insert(0, session)
+    state["recent_attaches"] = recent[:max_entries]
+    save_state(state)
 
 
 def _parse_toml_map(text: str) -> dict[str, str]:

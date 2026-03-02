@@ -302,6 +302,7 @@ def cmd_attach(args: argparse.Namespace) -> int:
             return 1
 
     config.set_focus(session)
+    config.touch_recent_attach(session)
     tmux.attach(session)
     return 0
 
@@ -309,7 +310,12 @@ def cmd_attach(args: argparse.Namespace) -> int:
 def _build_attach_menu_rows() -> list[dict[str, object]]:
     mappings = config.load_mappings()
     sessions = {row["name"]: row for row in tmux.list_sessions()}
-    names = sorted(set(mappings.keys()) | set(sessions.keys()))
+    recent = config.get_recent_attaches()
+    recent_rank = {name: i for i, name in enumerate(recent)}
+    names = sorted(
+        set(mappings.keys()) | set(sessions.keys()),
+        key=lambda name: (recent_rank.get(name, len(recent_rank) + 1), name),
+    )
 
     focus = config.get_focus()
     rows: list[dict[str, object]] = []
