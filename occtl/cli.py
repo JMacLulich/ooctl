@@ -14,6 +14,11 @@ from collections.abc import Sequence
 from datetime import datetime
 from pathlib import Path
 
+try:
+    import readline
+except ImportError:
+    readline = None  # type: ignore[misc,assignment]
+
 from . import config, tmux
 from .notify import alert_router_webhook, discord_webhook, mac_notify
 from .relay import serve as serve_relay
@@ -503,12 +508,46 @@ def _read_menu_key() -> str:
     return "other"
 
 
+def _path_completer(text: str, state: int) -> str | None:
+    """Readline completer for file/directory paths with ~ expansion."""
+    # Expand ~ to home directory for matching
+    expanded = os.path.expanduser(text) if text.startswith("~") else text
+    base, partial = os.path.split(expanded)
+    if not base:
+        base = "."
+    try:
+        entries = os.listdir(base)
+    except OSError:
+        entries = []
+    matches = [e for e in entries if e.startswith(partial)]
+    if state >= len(matches):
+        return None
+    # Return full path (re-attach ~ prefix if used)
+    result = os.path.join(base, matches[state])
+    if text.startswith("~"):
+        home = str(Path.home())
+        if result.startswith(home):
+            result = "~" + result[len(home) :]
+    return result + "/" if os.path.isdir(result) else result
+
+
 def _prompt_for_path(session: str, current: str, fd: int, old_termios: list) -> str | None:
     print("\033[2J\033[H", end="")
     print(f"Remap directory for: {session}")
     print(f"Current: {current or '(unmapped)'}")
-    print("Enter new path (or press Enter to cancel):")
+    print("Enter new path (Tab: autocomplete, Enter: confirm, Esc/Ctrl+C: cancel):")
     print()
+
+    # Save readline state and configure for path completion
+    old_completer = None
+    old_delims = None
+    if readline is not None:
+        old_completer = readline.get_completer()
+        old_delims = readline.get_completer_delims()
+        readline.set_completer(_path_completer)
+        readline.set_completer_delims(" \t\n")  # Exclude / so paths complete component-wise
+        readline.parse_and_bind("tab: complete")
+
     termios.tcsetattr(fd, termios.TCSADRAIN, old_termios)
     try:
         path = input("> ").strip()
@@ -517,6 +556,11 @@ def _prompt_for_path(session: str, current: str, fd: int, old_termios: list) -> 
         return None
     finally:
         tty.setcbreak(fd)
+        # Restore readline state
+        if readline is not None and old_completer is not None:
+            readline.set_completer(old_completer)
+            if old_delims is not None:
+                readline.set_completer_delims(old_delims)
     return path if path else None
 
 
