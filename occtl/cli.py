@@ -546,7 +546,11 @@ def _prompt_for_path(session: str, current: str, fd: int, old_termios: list) -> 
         old_delims = readline.get_completer_delims()
         readline.set_completer(_path_completer)
         readline.set_completer_delims(" \t\n")  # Exclude / so paths complete component-wise
-        readline.parse_and_bind("tab: complete")
+        # macOS uses libedit which has different binding syntax than GNU readline
+        if "libedit" in (readline.__doc__ or ""):
+            readline.parse_and_bind("bind ^I rl_complete")
+        else:
+            readline.parse_and_bind("tab: complete")
 
     termios.tcsetattr(fd, termios.TCSADRAIN, old_termios)
     try:
