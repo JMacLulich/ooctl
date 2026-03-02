@@ -436,7 +436,7 @@ def _render_attach_menu(rows: list[dict[str, object]], idx: int) -> None:
     print(_menu_row(" OC SESSION MANAGER ", inner))
     print(_menu_row(_attach_banner_text(), inner))
     print(_menu_border(inner))
-    print(_menu_row(" Up/Down or j/k: move   Enter: attach/start   q/Esc: exit ", inner))
+    print(_menu_row(" Up/Down/j/k: move   Enter: attach   r: remap dir   q/Esc: exit ", inner))
     print(_menu_border(inner))
     print(_menu_row("   SESSION".ljust(name_w + 5) + "STATE", inner))
     print(_menu_border(inner))
@@ -498,7 +498,26 @@ def _read_menu_key() -> str:
         return "enter"
     if ch in {"q", "Q"}:
         return "quit"
+    if ch in {"r", "R"}:
+        return "remap"
     return "other"
+
+
+def _prompt_for_path(session: str, current: str, fd: int, old_termios: list) -> str | None:
+    print("\033[2J\033[H", end="")
+    print(f"Remap directory for: {session}")
+    print(f"Current: {current or '(unmapped)'}")
+    print("Enter new path (or press Enter to cancel):")
+    print()
+    termios.tcsetattr(fd, termios.TCSADRAIN, old_termios)
+    try:
+        path = input("> ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return None
+    finally:
+        tty.setcbreak(fd)
+    return path if path else None
 
 
 def _choose_attach_session_interactive() -> str | None:
@@ -515,8 +534,6 @@ def _choose_attach_session_interactive() -> str | None:
     fd = sys.stdin.fileno()
     old = termios.tcgetattr(fd)
     try:
-        # Use cbreak (not raw) so terminal output processing keeps newline->CRLF.
-        # Raw mode can cause staircase/diagonal rendering in some SSH terminals.
         tty.setcbreak(fd)
         while True:
             _render_attach_menu(rows, idx)
@@ -530,6 +547,19 @@ def _choose_attach_session_interactive() -> str | None:
                 if rows[idx]["exit"]:
                     return None
                 return str(rows[idx]["name"])
+            elif key == "remap":
+                if rows[idx]["exit"]:
+                    continue
+                session_name = str(rows[idx]["name"])
+                current_dir = str(rows[idx]["mapped_dir"])
+                new_path = _prompt_for_path(session_name, current_dir, fd, old)
+                if new_path:
+                    config.set_mapping(session_name, new_path)
+                    rows = _build_attach_menu_rows()
+                    for i, r in enumerate(rows):
+                        if r["name"] == session_name:
+                            idx = i
+                            break
             elif key in {"quit", "esc"}:
                 print("\033[2J\033[H", end="")
                 return None
