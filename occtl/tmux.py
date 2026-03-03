@@ -68,13 +68,18 @@ def send_keys(target: str, keys: list[str]) -> None:
     run(["tmux", "send-keys", "-t", target, *keys])
 
 
-def attach(name: str) -> None:
+def attach(name: str, control_mode: bool = False) -> None:
+    cmd = ["tmux"]
+    if control_mode:
+        cmd.append("-CC")
+    cmd.extend(["attach", "-t", name])
     try:
-        subprocess.check_call(["tmux", "attach", "-t", name])
+        subprocess.check_call(cmd)
     except FileNotFoundError as e:
         raise _tmux_missing() from e
     except subprocess.CalledProcessError as e:
-        raise TmuxError(f"Command failed: tmux attach -t {name}") from e
+        rendered_cmd = " ".join(cmd)
+        raise TmuxError(f"Command failed: {rendered_cmd}") from e
 
 
 def kill_session(name: str) -> None:

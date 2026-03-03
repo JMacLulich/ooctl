@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import io
 from pathlib import Path
 
 import pytest
@@ -43,6 +44,13 @@ def test_attach_command_name_is_optional() -> None:
     args = parser.parse_args(["attach"])
 
     assert args.name is None
+
+
+def test_attach_command_supports_cc_flag() -> None:
+    parser = cli.build_parser()
+    args = parser.parse_args(["attach", "--cc"])
+
+    assert args.cc is True
 
 
 def test_setting_and_loading_spaced_mapping(tmp_path: Path, monkeypatch) -> None:
@@ -133,7 +141,12 @@ def test_cmd_attach_uses_interactive_choice_when_name_missing(monkeypatch) -> No
     monkeypatch.setattr(cli, "_choose_attach_session_interactive", lambda: "filter2")
     monkeypatch.setattr(cli.tmux, "has_session", lambda name: name == "filter2")
 
-    called: dict[str, str | None] = {"focus": None, "attach": None, "recent": None}
+    called: dict[str, str | None | bool] = {
+        "focus": None,
+        "attach": None,
+        "recent": None,
+        "cc": False,
+    }
 
     monkeypatch.setattr(cli.config, "set_focus", lambda name: called.__setitem__("focus", name))
     monkeypatch.setattr(
@@ -141,7 +154,14 @@ def test_cmd_attach_uses_interactive_choice_when_name_missing(monkeypatch) -> No
         "touch_recent_attach",
         lambda name: called.__setitem__("recent", name),
     )
-    monkeypatch.setattr(cli.tmux, "attach", lambda name: called.__setitem__("attach", name))
+    monkeypatch.setattr(
+        cli.tmux,
+        "attach",
+        lambda name, control_mode=False: (
+            called.__setitem__("attach", name),
+            called.__setitem__("cc", control_mode),
+        ),
+    )
 
     rc = cli.cmd_attach(argparse.Namespace(name=None))
 
@@ -149,6 +169,7 @@ def test_cmd_attach_uses_interactive_choice_when_name_missing(monkeypatch) -> No
     assert called["focus"] == "filter2"
     assert called["recent"] == "filter2"
     assert called["attach"] == "filter2"
+    assert called["cc"] is False
 
 
 def test_cmd_attach_starts_mapped_session_when_not_running(monkeypatch) -> None:
@@ -168,14 +189,26 @@ def test_cmd_attach_starts_mapped_session_when_not_running(monkeypatch) -> None:
     monkeypatch.setattr(cli.tmux, "has_session", _has_session)
     monkeypatch.setattr(cli, "cmd_new", _cmd_new)
 
-    called: dict[str, str | None] = {"focus": None, "attach": None, "recent": None}
+    called: dict[str, str | None | bool] = {
+        "focus": None,
+        "attach": None,
+        "recent": None,
+        "cc": False,
+    }
     monkeypatch.setattr(cli.config, "set_focus", lambda name: called.__setitem__("focus", name))
     monkeypatch.setattr(
         cli.config,
         "touch_recent_attach",
         lambda name: called.__setitem__("recent", name),
     )
-    monkeypatch.setattr(cli.tmux, "attach", lambda name: called.__setitem__("attach", name))
+    monkeypatch.setattr(
+        cli.tmux,
+        "attach",
+        lambda name, control_mode=False: (
+            called.__setitem__("attach", name),
+            called.__setitem__("cc", control_mode),
+        ),
+    )
 
     rc = cli.cmd_attach(argparse.Namespace(name=None))
 
@@ -184,6 +217,40 @@ def test_cmd_attach_starts_mapped_session_when_not_running(monkeypatch) -> None:
     assert called["focus"] == "gig guide"
     assert called["recent"] == "gig guide"
     assert called["attach"] == "gig guide"
+    assert called["cc"] is False
+
+
+def test_cmd_attach_passes_cc_flag_to_tmux(monkeypatch) -> None:
+    monkeypatch.setattr(cli.tmux, "has_session", lambda name: name == "filter2")
+
+    called: dict[str, str | None | bool] = {
+        "focus": None,
+        "attach": None,
+        "recent": None,
+        "cc": False,
+    }
+    monkeypatch.setattr(cli.config, "set_focus", lambda name: called.__setitem__("focus", name))
+    monkeypatch.setattr(
+        cli.config,
+        "touch_recent_attach",
+        lambda name: called.__setitem__("recent", name),
+    )
+    monkeypatch.setattr(
+        cli.tmux,
+        "attach",
+        lambda name, control_mode=False: (
+            called.__setitem__("attach", name),
+            called.__setitem__("cc", control_mode),
+        ),
+    )
+
+    rc = cli.cmd_attach(argparse.Namespace(name="filter2", cc=True))
+
+    assert rc == 0
+    assert called["focus"] == "filter2"
+    assert called["recent"] == "filter2"
+    assert called["attach"] == "filter2"
+    assert called["cc"] is True
 
 
 def test_attach_menu_sorts_recent_sessions_first(monkeypatch) -> None:
@@ -245,6 +312,20 @@ def test_attach_banner_includes_host_and_focus(monkeypatch) -> None:
 
     assert "Host: studio.home" in banner
     assert "Focus: filter2" in banner
+
+
+def test_read_menu_key_recognizes_csi_arrow_sequences(monkeypatch) -> None:
+    monkeypatch.setattr(cli.sys, "stdin", io.StringIO("\x1b[A\x1b[B"))
+
+    assert cli._read_menu_key() == "up"
+    assert cli._read_menu_key() == "down"
+
+
+def test_read_menu_key_recognizes_ss3_arrow_sequences(monkeypatch) -> None:
+    monkeypatch.setattr(cli.sys, "stdin", io.StringIO("\x1bOA\x1bOB"))
+
+    assert cli._read_menu_key() == "up"
+    assert cli._read_menu_key() == "down"
 
 
 def test_match_wait_pattern_detects_prompt() -> None:

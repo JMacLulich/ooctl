@@ -303,7 +303,7 @@ def cmd_attach(args: argparse.Namespace) -> int:
 
     config.set_focus(session)
     config.touch_recent_attach(session)
-    tmux.attach(session)
+    tmux.attach(session, control_mode=bool(getattr(args, "cc", False)))
     return 0
 
 
@@ -494,7 +494,7 @@ def _read_menu_key() -> str:
     ch = sys.stdin.read(1)
     if ch == "\x1b":
         nxt = sys.stdin.read(1)
-        if nxt == "[":
+        if nxt in {"[", "O"}:
             third = sys.stdin.read(1)
             if third == "A":
                 return "up"
@@ -922,6 +922,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("attach", help="attach to a session (interactive picker when omitted)")
     sp.add_argument("name", nargs="?", default=None)
+    sp.add_argument(
+        "--cc",
+        action="store_true",
+        help="use iTerm2 control mode (tmux -CC) when attaching",
+    )
     sp.set_defaults(fn=cmd_attach)
 
     sp = sub.add_parser("kill", help="kill a session (focused session by default)")
