@@ -53,20 +53,6 @@ def test_attach_command_supports_cc_flag() -> None:
     assert args.cc is True
 
 
-def test_attach_command_defaults_to_cc_enabled() -> None:
-    parser = cli.build_parser()
-    args = parser.parse_args(["attach"])
-
-    assert args.cc is True
-
-
-def test_attach_command_supports_disabling_cc() -> None:
-    parser = cli.build_parser()
-    args = parser.parse_args(["attach", "--no-cc"])
-
-    assert args.cc is False
-
-
 def test_setting_and_loading_spaced_mapping(tmp_path: Path, monkeypatch) -> None:
     config_dir = tmp_path / ".config" / "occtl"
     monkeypatch.setattr(config, "CONFIG_DIR", config_dir)
@@ -183,7 +169,7 @@ def test_cmd_attach_uses_interactive_choice_when_name_missing(monkeypatch) -> No
     assert called["focus"] == "filter2"
     assert called["recent"] == "filter2"
     assert called["attach"] == "filter2"
-    assert called["cc"] is True
+    assert called["cc"] is False
 
 
 def test_cmd_attach_starts_mapped_session_when_not_running(monkeypatch) -> None:
@@ -231,7 +217,7 @@ def test_cmd_attach_starts_mapped_session_when_not_running(monkeypatch) -> None:
     assert called["focus"] == "gig guide"
     assert called["recent"] == "gig guide"
     assert called["attach"] == "gig guide"
-    assert called["cc"] is True
+    assert called["cc"] is False
 
 
 def test_cmd_attach_passes_cc_flag_to_tmux(monkeypatch) -> None:

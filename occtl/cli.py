@@ -303,7 +303,7 @@ def cmd_attach(args: argparse.Namespace) -> int:
 
     config.set_focus(session)
     config.touch_recent_attach(session)
-    tmux.attach(session, control_mode=bool(getattr(args, "cc", True)))
+    tmux.attach(session, control_mode=bool(getattr(args, "cc", False)))
     return 0
 
 
@@ -924,9 +924,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("name", nargs="?", default=None)
     sp.add_argument(
         "--cc",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="use iTerm2 control mode (tmux -CC) when attaching (default: on)",
+        action="store_true",
+        help="use iTerm2 control mode (tmux -CC) when attaching",
     )
     sp.set_defaults(fn=cmd_attach)
 
