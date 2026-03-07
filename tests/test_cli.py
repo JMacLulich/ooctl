@@ -53,6 +53,34 @@ def test_attach_command_supports_cc_flag() -> None:
     assert args.cc is True
 
 
+def test_clipboard_setup_parser_accepts_flags() -> None:
+    parser = cli.build_parser()
+    args = parser.parse_args(
+        [
+            "clipboard",
+            "setup",
+            "--mode",
+            "osc52",
+            "--dry-run",
+            "--bind-keys",
+            "minimal",
+            "--reload",
+        ]
+    )
+
+    assert args.mode == "osc52"
+    assert args.dry_run is True
+    assert args.bind_keys == "minimal"
+    assert args.reload is True
+
+
+def test_clipboard_status_parser_supports_json() -> None:
+    parser = cli.build_parser()
+    args = parser.parse_args(["clipboard", "status", "--json"])
+
+    assert args.json is True
+
+
 def test_setting_and_loading_spaced_mapping(tmp_path: Path, monkeypatch) -> None:
     config_dir = tmp_path / ".config" / "occtl"
     monkeypatch.setattr(config, "CONFIG_DIR", config_dir)

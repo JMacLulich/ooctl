@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import shutil
@@ -19,7 +20,7 @@ try:
 except ImportError:
     readline = None  # type: ignore[misc,assignment]
 
-from . import config, tmux
+from . import clipboard, config, tmux
 from .notify import alert_router_webhook, discord_webhook, mac_notify
 from .relay import serve as serve_relay
 from .voice import parse_voice
@@ -43,6 +44,7 @@ COMMANDS = (
     "set-relay-token",
     "relay",
     "voice",
+    "clipboard",
     "completion",
 )
 
@@ -769,6 +771,116 @@ def cmd_completion(args: argparse.Namespace) -> int:
     return 2
 
 
+def cmd_clipboard_setup(args: argparse.Namespace) -> int:
+    try:
+        result = clipboard.setup(
+            mode=args.mode,
+            tmux_conf=args.tmux_conf,
+            tmux_socket=args.tmux_socket,
+            dry_run=args.dry_run,
+            print_snippet=args.print_snippet,
+            reload_tmux=args.reload,
+            bind_keys=args.bind_keys,
+            follow_symlink=args.follow_symlink,
+        )
+    except clipboard.ClipboardError as e:
+        print(str(e))
+        return 1
+
+    if args.print_snippet:
+        print("# Add this block to your tmux config")
+        print(result["snippet"])
+        print("# Managed include content")
+        print(result["include_text"])
+        return 0
+
+    if args.dry_run:
+        print(f"mode:\t{result['mode']}")
+        print(f"tmux_conf:\t{result['tmux_conf']}")
+        print(f"tmux_conf_changed:\t{int(result['changes']['tmux_conf_changed'])}")
+        print(f"include_changed:\t{int(result['changes']['include_changed'])}")
+        return 0
+
+    print(f"configured:\t{result['mode']}")
+    print(f"tmux_conf:\t{result['tmux_conf']}")
+    print(f"include:\t{result['include_file']}")
+    if result.get("helper_file"):
+        print(f"helper:\t{result['helper_file']}")
+    if result.get("reload_error"):
+        print(f"reload:\tfailed ({result['reload_error']})")
+        print("tip:\treload manually with `tmux source-file ~/.tmux.conf`")
+    elif args.reload:
+        print("reload:\tok")
+    return 0
+
+
+def cmd_clipboard_status(args: argparse.Namespace) -> int:
+    data = clipboard.status(tmux_socket=args.tmux_socket)
+    if args.json:
+        print(json.dumps(data, indent=2))
+        return 0
+
+    print(f"configured_on_disk:\t{int(data['configured_on_disk'])}")
+    loaded = data["loaded_in_tmux"]
+    loaded_text = "unknown" if loaded is None else str(int(bool(loaded)))
+    print(f"loaded_in_tmux:\t{loaded_text}")
+    if data.get("tmux_socket_used"):
+        print(f"tmux_socket:\t{data['tmux_socket_used']}")
+    if data.get("tmux_socket_ambiguous"):
+        print("tmux_socket_ambiguous:\t1")
+        print("tip:\tpass --tmux-socket <path> to target a specific tmux server")
+    print(f"selected_mode:\t{data['selected_mode'] or '(none)'}")
+    if data["loaded_mode"]:
+        print(f"loaded_mode:\t{data['loaded_mode']}")
+    print(f"helper_kind:\t{data['helper_kind']}")
+    if data["helper_health"] is not None:
+        print(f"helper_health:\t{int(bool(data['helper_health']))}")
+    verification = data["verification"]
+    print(f"emission_verified:\t{int(bool(verification['emission_verified']))}")
+    print(f"clipboard_verified:\t{int(bool(verification['clipboard_verified']))}")
+    if data["reasons"]:
+        print(f"reasons:\t{', '.join(data['reasons'])}")
+    return 0
+
+
+def cmd_clipboard_verify(args: argparse.Namespace) -> int:
+    try:
+        data = clipboard.verify(strict=args.strict)
+    except clipboard.ClipboardError as e:
+        print(str(e))
+        return 1
+
+    print(f"emission_verified:\t{int(bool(data['emission_verified']))}")
+    print(f"clipboard_verified:\t{int(bool(data['clipboard_verified']))}")
+    if data["emission_verified"] and not data["clipboard_verified"]:
+        print("tip:\tOSC52 emitted, but clipboard was not confirmed")
+        return 1
+    return 0
+
+
+def cmd_clipboard_uninstall(args: argparse.Namespace) -> int:
+    try:
+        result = clipboard.uninstall(
+            tmux_conf=args.tmux_conf,
+            remove_helper=args.remove_helper,
+            follow_symlink=args.follow_symlink,
+        )
+    except clipboard.ClipboardError as e:
+        print(str(e))
+        return 1
+
+    if not result["removed"]:
+        print(result["message"])
+        return 0
+
+    print("clipboard config removed")
+    print(f"restored_backup:\t{int(bool(result['restored_backup']))}")
+    print(f"removed_marker_block:\t{int(bool(result['removed_block']))}")
+    if args.remove_helper:
+        print(f"removed_helper:\t{int(bool(result['removed_helper']))}")
+    return 0
+
+
 def _bash_completion_script() -> str:
     cmds = _fmt_cmds_for_shell(COMMANDS)
     template = """# occtl bash completion
@@ -784,6 +896,32 @@ _occtl_complete() {
 
   if [[ $COMP_CWORD -eq 1 ]]; then
     COMPREPLY=( $(compgen -W "{cmds}" -- "$cur") )
+    return 0
+  fi
+
+  if [[ "${COMP_WORDS[1]}" == "clipboard" ]]; then
+    if [[ $COMP_CWORD -eq 2 ]]; then
+      COMPREPLY=( $(compgen -W "setup status verify uninstall" -- "$cur") )
+      return 0
+    fi
+
+    case "$prev" in
+      setup)
+        local clipboard_setup_opts
+        clipboard_setup_opts="--mode --tmux-conf --tmux-socket --dry-run --print-snippet"
+        clipboard_setup_opts+=" --reload --bind-keys --follow-symlink"
+        COMPREPLY=( $(compgen -W "$clipboard_setup_opts" -- "$cur") )
+        ;;
+      status)
+        COMPREPLY=( $(compgen -W "--json --tmux-socket" -- "$cur") )
+        ;;
+      verify)
+        COMPREPLY=( $(compgen -W "--strict" -- "$cur") )
+        ;;
+      uninstall)
+        COMPREPLY=( $(compgen -W "--tmux-conf --remove-helper --follow-symlink" -- "$cur") )
+        ;;
+    esac
     return 0
   fi
 
@@ -829,6 +967,24 @@ _occtl() {
   fi
 
   case "$words[2]" in
+    clipboard)
+      if (( CURRENT == 3 )); then
+        compadd -- setup status verify uninstall
+      elif [[ "$words[3]" == "setup" ]]; then
+        local -a clip_setup_opts
+        clip_setup_opts=(
+          --mode --tmux-conf --tmux-socket --dry-run --print-snippet
+          --reload --bind-keys --follow-symlink
+        )
+        compadd -- $clip_setup_opts
+      elif [[ "$words[3]" == "status" ]]; then
+        compadd -- --json --tmux-socket
+      elif [[ "$words[3]" == "verify" ]]; then
+        compadd -- --strict
+      elif [[ "$words[3]" == "uninstall" ]]; then
+        compadd -- --tmux-conf --remove-helper --follow-symlink
+      fi
+      ;;
     attach|focus|kill)
       compadd -a sessions
       ;;
@@ -872,6 +1028,22 @@ complete -c oc -n "__fish_seen_subcommand_from watch" -l idle-seconds -r
 complete -c oc -n "__fish_seen_subcommand_from watch" -l capture-lines -r
 complete -c oc -n "__fish_seen_subcommand_from say enter" -l session -r -a "(__occtl_tmux_sessions)"
 complete -c oc -n "__fish_seen_subcommand_from completion" -f -a "bash zsh fish"
+complete -c oc -n "__fish_seen_subcommand_from clipboard" -f -a "setup status verify uninstall"
+complete -c oc -n "__fish_seen_subcommand_from clipboard setup" -l mode -r -a "auto osc52 native"
+complete -c oc -n "__fish_seen_subcommand_from clipboard setup" -l tmux-conf -r
+complete -c oc -n "__fish_seen_subcommand_from clipboard setup" -l tmux-socket -r
+complete -c oc -n "__fish_seen_subcommand_from clipboard setup" -l dry-run
+complete -c oc -n "__fish_seen_subcommand_from clipboard setup" -l print-snippet
+complete -c oc -n "__fish_seen_subcommand_from clipboard setup" -l reload
+complete -c oc -n "__fish_seen_subcommand_from clipboard setup" -l bind-keys -r \
+  -a "minimal copy-mode-y none"
+complete -c oc -n "__fish_seen_subcommand_from clipboard setup" -l follow-symlink
+complete -c oc -n "__fish_seen_subcommand_from clipboard status" -l json
+complete -c oc -n "__fish_seen_subcommand_from clipboard status" -l tmux-socket -r
+complete -c oc -n "__fish_seen_subcommand_from clipboard verify" -l strict
+complete -c oc -n "__fish_seen_subcommand_from clipboard uninstall" -l tmux-conf -r
+complete -c oc -n "__fish_seen_subcommand_from clipboard uninstall" -l remove-helper
+complete -c oc -n "__fish_seen_subcommand_from clipboard uninstall" -l follow-symlink
     """
     return template.replace("{cmds}", cmds)
 
@@ -967,6 +1139,42 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("completion", help="print shell completion script")
     sp.add_argument("shell", choices=("bash", "zsh", "fish"))
     sp.set_defaults(fn=cmd_completion)
+
+    sp = sub.add_parser("clipboard", help="configure tmux clipboard integration")
+    clip_sub = sp.add_subparsers(dest="clipboard_cmd", required=False)
+
+    clip_setup = clip_sub.add_parser("setup", help="install managed tmux clipboard config")
+    clip_setup.add_argument("--mode", choices=("auto", "osc52", "native"), default="auto")
+    clip_setup.add_argument("--tmux-conf", default=None)
+    clip_setup.add_argument("--tmux-socket", default=None)
+    clip_setup.add_argument("--dry-run", action="store_true")
+    clip_setup.add_argument("--print-snippet", action="store_true")
+    clip_setup.add_argument("--reload", action="store_true")
+    clip_setup.add_argument(
+        "--bind-keys",
+        choices=("minimal", "copy-mode-y", "none"),
+        default="minimal",
+        help="minimal binds copy-mode Y; copy-mode-y overrides y",
+    )
+    clip_setup.add_argument("--follow-symlink", action="store_true")
+    clip_setup.set_defaults(fn=cmd_clipboard_setup)
+
+    clip_status = clip_sub.add_parser("status", help="show clipboard integration status")
+    clip_status.add_argument("--json", action="store_true")
+    clip_status.add_argument("--tmux-socket", default=None)
+    clip_status.set_defaults(fn=cmd_clipboard_status)
+
+    clip_verify = clip_sub.add_parser("verify", help="verify OSC52 emission and clipboard paste")
+    clip_verify.add_argument("--strict", action="store_true")
+    clip_verify.set_defaults(fn=cmd_clipboard_verify)
+
+    clip_uninstall = clip_sub.add_parser("uninstall", help="remove managed clipboard configuration")
+    clip_uninstall.add_argument("--tmux-conf", default=None)
+    clip_uninstall.add_argument("--remove-helper", action="store_true")
+    clip_uninstall.add_argument("--follow-symlink", action="store_true")
+    clip_uninstall.set_defaults(fn=cmd_clipboard_uninstall)
+
+    sp.set_defaults(fn=cmd_clipboard_status, json=False, tmux_socket=None)
 
     return p
 

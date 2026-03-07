@@ -12,6 +12,14 @@ def _tmux_missing() -> TmuxError:
     return TmuxError("tmux is not installed or not on PATH")
 
 
+def _with_socket(cmd: list[str], socket_path: str | None) -> list[str]:
+    if not socket_path:
+        return cmd
+    if cmd and cmd[0] == "tmux":
+        return ["tmux", "-S", socket_path, *cmd[1:]]
+    return ["tmux", "-S", socket_path, *cmd]
+
+
 def run(cmd: Sequence[str]) -> str:
     try:
         return subprocess.check_output(cmd, text=True, stderr=subprocess.PIPE).strip()
@@ -111,3 +119,16 @@ def capture_last_lines(session: str, window: str = "main", lines: int = 120) -> 
         )
     except TmuxError:
         return ""
+
+
+def source_file(path: str, socket_path: str | None = None) -> None:
+    run(_with_socket(["tmux", "source-file", path], socket_path))
+
+
+def show_global_option(name: str, socket_path: str | None = None) -> str:
+    return run(_with_socket(["tmux", "show-options", "-gqv", name], socket_path)).strip()
+
+
+def version(socket_path: str | None = None) -> str:
+    out = run(_with_socket(["tmux", "-V"], socket_path))
+    return out.strip()

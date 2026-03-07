@@ -34,3 +34,24 @@ def test_capture_last_lines_returns_empty_on_tmux_error(monkeypatch: pytest.Monk
     monkeypatch.setattr(tmux, "run", _raise_tmux_error)
 
     assert tmux.capture_last_lines("infra") == ""
+
+
+def test_show_global_option_uses_socket_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: dict[str, list[str]] = {}
+
+    def _run(cmd: list[str]) -> str:
+        seen["cmd"] = cmd
+        return "1"
+
+    monkeypatch.setattr(tmux, "run", _run)
+
+    out = tmux.show_global_option("@oc_clipboard_loaded", socket_path="/tmp/tmux-test.sock")
+
+    assert out == "1"
+    assert seen["cmd"][:3] == ["tmux", "-S", "/tmp/tmux-test.sock"]
+
+
+def test_version_trims_output(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(tmux, "run", lambda _cmd: "tmux 3.4\n")
+
+    assert tmux.version() == "tmux 3.4"

@@ -86,6 +86,27 @@ oc attach infra          # interactive attach (best from Termius)
 oc kill infra            # terminate a session (or: oc kill for focused)
 ```
 
+### Clipboard over SSH (tmux + OSC52)
+
+`oc` can install a managed tmux clipboard include so copy-mode selections can reach your local
+clipboard across SSH (OSC52-first).
+
+```bash
+oc clipboard setup --mode auto --reload
+oc clipboard status
+oc clipboard verify
+```
+
+Notes:
+- Run setup on the same host where tmux runs.
+- Default keybind mode is non-invasive: copy-mode `Y` (not `y`).
+- If your terminal blocks OSC52, `verify` may show emission success but clipboard failure.
+- Uninstall managed config:
+
+```bash
+oc clipboard uninstall --remove-helper
+```
+
 ## Voice-first workflow (recommended)
 
 - Voice commands are non-interactive (Shortcuts runs an SSH command, not a live terminal).
