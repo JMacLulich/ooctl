@@ -112,6 +112,83 @@ def _session_context(session: str) -> tuple[str, str]:
     return project_dir, host
 
 
+def _in_ssh_session() -> bool:
+    return bool(
+        os.environ.get("SSH_CONNECTION")
+        or os.environ.get("SSH_CLIENT")
+        or os.environ.get("SSH_TTY")
+    )
+
+
+def _clipboard_attach_hints() -> list[str]:
+    try:
+        data = clipboard.status(tmux_socket=None)
+    except clipboard.ClipboardError:
+        return []
+
+    reasons = set(data.get("reasons", []))
+    verification = data.get("verification", {})
+    ssh_session = _in_ssh_session()
+    selected_mode = data.get("selected_mode", "")
+
+    if not ssh_session and not selected_mode:
+        return []
+
+    hints: list[str] = []
+
+    if not data.get("configured_on_disk"):
+        if ssh_session:
+            hints.append(
+                "clipboard: SSH copy is not configured on this host; run "
+                "`oc clipboard setup --mode auto --reload`"
+            )
+            hints.append(
+                "clipboard: after setup, enter tmux copy mode and press `Y`; then run "
+                "`oc clipboard verify` to confirm local paste works"
+            )
+        return hints
+
+    if data.get("tmux_socket_ambiguous"):
+        hints.append(
+            "clipboard: multiple tmux servers detected; find the right server with "
+            "`oc clipboard status --tmux-socket <path>` and reload that tmux instance"
+        )
+        return hints
+
+    loaded_in_tmux = data.get("loaded_in_tmux")
+    if loaded_in_tmux is False:
+        hints.append(
+            "clipboard: config is installed but not loaded in tmux; run "
+            "`oc clipboard setup --mode auto --reload` or `tmux source-file ~/.tmux.conf`"
+        )
+    elif loaded_in_tmux is None and ssh_session:
+        hints.append(
+            "clipboard: tmux status could not be checked from this shell; if copy fails, run "
+            "`oc clipboard status` or `oc clipboard setup --mode auto --reload` inside tmux"
+        )
+
+    if data.get("helper_health") is False:
+        hints.append(
+            "clipboard: OSC52 helper is missing or unhealthy; rerun "
+            "`oc clipboard setup --mode auto --reload`"
+        )
+
+    if verification.get("emission_verified") and not verification.get("clipboard_verified"):
+        hints.append(
+            "clipboard: OSC52 emits but paste was not confirmed; run `oc clipboard verify`, and if "
+            "it still fails, enable OSC52 clipboard access in your terminal"
+        )
+    elif ssh_session and selected_mode == "osc52" and not verification.get("verified_at"):
+        hints.append(
+            "clipboard: not yet verified in this terminal; run `oc clipboard verify` if copy fails"
+        )
+
+    if hints and ssh_session and selected_mode == "osc52" and "tmux_not_loaded" not in reasons:
+        hints.append("clipboard: once working, use tmux copy mode + `Y` for remote-to-local copy")
+
+    return hints
+
+
 def _relay_status() -> str:
     try:
         with urllib.request.urlopen("http://127.0.0.1:8878/health", timeout=0.8) as resp:
@@ -305,6 +382,8 @@ def cmd_attach(args: argparse.Namespace) -> int:
 
     config.set_focus(session)
     config.touch_recent_attach(session)
+    for hint in _clipboard_attach_hints():
+        print(hint)
     tmux.attach(session, control_mode=bool(getattr(args, "cc", False)))
     return 0
 

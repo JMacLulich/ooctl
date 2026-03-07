@@ -281,6 +281,135 @@ def test_cmd_attach_passes_cc_flag_to_tmux(monkeypatch) -> None:
     assert called["cc"] is True
 
 
+def test_cmd_attach_prints_setup_hint_for_ssh_when_clipboard_unconfigured(
+    monkeypatch, capsys
+) -> None:
+    monkeypatch.setattr(cli.tmux, "has_session", lambda name: name == "filter2")
+    monkeypatch.setattr(cli.config, "set_focus", lambda _name: None)
+    monkeypatch.setattr(cli.config, "touch_recent_attach", lambda _name: None)
+    monkeypatch.setattr(cli.tmux, "attach", lambda _name, control_mode=False: None)
+    monkeypatch.setattr(
+        cli.clipboard,
+        "status",
+        lambda tmux_socket=None: {
+            "configured_on_disk": False,
+            "selected_mode": "",
+            "loaded_in_tmux": None,
+            "helper_health": None,
+            "tmux_socket_ambiguous": False,
+            "verification": {
+                "emission_verified": False,
+                "clipboard_verified": False,
+                "verified_at": 0,
+            },
+            "reasons": ["not_fully_configured_on_disk"],
+        },
+    )
+    monkeypatch.setenv("SSH_CONNECTION", "1 2 3 4")
+
+    rc = cli.cmd_attach(argparse.Namespace(name="filter2", cc=False))
+
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "oc clipboard setup --mode auto --reload" in out
+    assert "oc clipboard verify" in out
+    assert "copy mode and press `Y`" in out
+
+
+def test_cmd_attach_prints_reload_hint_when_clipboard_not_loaded(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(cli.tmux, "has_session", lambda name: name == "filter2")
+    monkeypatch.setattr(cli.config, "set_focus", lambda _name: None)
+    monkeypatch.setattr(cli.config, "touch_recent_attach", lambda _name: None)
+    monkeypatch.setattr(cli.tmux, "attach", lambda _name, control_mode=False: None)
+    monkeypatch.setattr(
+        cli.clipboard,
+        "status",
+        lambda tmux_socket=None: {
+            "configured_on_disk": True,
+            "selected_mode": "osc52",
+            "loaded_in_tmux": False,
+            "helper_health": True,
+            "tmux_socket_ambiguous": False,
+            "verification": {
+                "emission_verified": False,
+                "clipboard_verified": False,
+                "verified_at": 0,
+            },
+            "reasons": ["tmux_not_loaded"],
+        },
+    )
+
+    rc = cli.cmd_attach(argparse.Namespace(name="filter2", cc=False))
+
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "not loaded in tmux" in out
+    assert "tmux source-file ~/.tmux.conf" in out
+
+
+def test_cmd_attach_prints_terminal_fix_hint_when_osc52_emits_but_paste_fails(
+    monkeypatch, capsys
+) -> None:
+    monkeypatch.setattr(cli.tmux, "has_session", lambda name: name == "filter2")
+    monkeypatch.setattr(cli.config, "set_focus", lambda _name: None)
+    monkeypatch.setattr(cli.config, "touch_recent_attach", lambda _name: None)
+    monkeypatch.setattr(cli.tmux, "attach", lambda _name, control_mode=False: None)
+    monkeypatch.setattr(
+        cli.clipboard,
+        "status",
+        lambda tmux_socket=None: {
+            "configured_on_disk": True,
+            "selected_mode": "osc52",
+            "loaded_in_tmux": True,
+            "helper_health": True,
+            "tmux_socket_ambiguous": False,
+            "verification": {
+                "emission_verified": True,
+                "clipboard_verified": False,
+                "verified_at": 123,
+            },
+            "reasons": [],
+        },
+    )
+    monkeypatch.setenv("SSH_CONNECTION", "1 2 3 4")
+
+    rc = cli.cmd_attach(argparse.Namespace(name="filter2", cc=False))
+
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "enable OSC52 clipboard access in your terminal" in out
+    assert "copy mode + `Y`" in out
+
+
+def test_cmd_attach_stays_quiet_when_clipboard_looks_healthy(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(cli.tmux, "has_session", lambda name: name == "filter2")
+    monkeypatch.setattr(cli.config, "set_focus", lambda _name: None)
+    monkeypatch.setattr(cli.config, "touch_recent_attach", lambda _name: None)
+    monkeypatch.setattr(cli.tmux, "attach", lambda _name, control_mode=False: None)
+    monkeypatch.setattr(
+        cli.clipboard,
+        "status",
+        lambda tmux_socket=None: {
+            "configured_on_disk": True,
+            "selected_mode": "osc52",
+            "loaded_in_tmux": True,
+            "helper_health": True,
+            "tmux_socket_ambiguous": False,
+            "verification": {
+                "emission_verified": True,
+                "clipboard_verified": True,
+                "verified_at": 123,
+            },
+            "reasons": [],
+        },
+    )
+
+    rc = cli.cmd_attach(argparse.Namespace(name="filter2", cc=False))
+
+    assert rc == 0
+    assert capsys.readouterr().out == ""
+
+
 def test_attach_menu_sorts_recent_sessions_first(monkeypatch) -> None:
     monkeypatch.setattr(
         cli.config,
