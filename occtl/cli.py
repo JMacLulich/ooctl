@@ -613,19 +613,20 @@ def _session_idle_seconds(name: str) -> int | None:
         return None
 
 
-_VERSION = "0.6.0"
+_VERSION = "0.7.0"
 
 # Visible width of the status indicator ("● running" / "○ stopped")
 _STATUS_W = 9
+# Right-side padding between the status indicator and the border
+_RIGHT_MARGIN = 6
 
 
 def _render_attach_menu(rows: list[dict[str, object]], idx: int) -> None:
     cols = shutil.get_terminal_size(fallback=(100, 30)).columns
     inner = max(40, cols - 2)  # full terminal width, minus the two border chars
-    # Layout per row: "  {cursor} {name_w chars}  {status}  "
-    # name_w = inner - 4 (prefix) - gap - _STATUS_W - 2 (right margin), gap fixed at 2
-    name_w = max(16, min(60, inner - 4 - 2 - _STATUS_W - 2))
-    gap = max(2, inner - 4 - name_w - _STATUS_W - 2)
+    # Layout per row: "  {cursor} {name_w}  {status}{_RIGHT_MARGIN}"
+    name_w = max(16, min(60, inner - 4 - 2 - _STATUS_W - _RIGHT_MARGIN))
+    gap = max(2, inner - 4 - name_w - _STATUS_W - _RIGHT_MARGIN)
 
     host = socket.gethostname()
     focus = config.get_focus() or "none"
@@ -673,15 +674,16 @@ def _render_attach_menu(rows: list[dict[str, object]], idx: int) -> None:
             display = _fit_text(str(row["name"]), name_w)
 
         left = f"  {cursor} {_visible_ljust(display, name_w)}"
-        row_text = left + " " * gap + state + "  "
+        row_text = left + " " * gap + state + " " * _RIGHT_MARGIN
         line = _menu_row(row_text, inner)
         lines.append(f"\033[7m{line}\033[0m" if selected else line)
 
     lines.append(_box_mid(inner))
 
+    # Footer — each piece on its own line, default (cream) colour
     sel = rows[idx]
     if sel["exit"]:
-        footer = "  Exit without attaching"
+        footer_lines = ["  Exit without attaching"]
     else:
         mapped = _compact_path(str(sel["mapped_dir"]))
         row_type = sel.get("row_type", "leaf")
@@ -692,15 +694,16 @@ def _render_attach_menu(rows: list[dict[str, object]], idx: int) -> None:
         else:
             action = "start + attach"
         idle = _session_idle_seconds(str(sel["name"])) if bool(sel["running"]) else None
-        parts: list[str] = [f"  {sel['name']}", action]
-        if idle is not None:
-            parts.append(f"idle {idle}s")
-        parts.append(mapped)
+        idle_str = f"  idle {idle}s" if idle is not None else ""
+        footer_lines = [
+            f"  {sel['name']}  ·  {action}{idle_str}",
+            f"  {mapped}",
+        ]
         if sel["mapped_dir"]:
-            parts.append("n: spawn another")
-        footer = "  ·  ".join(parts)
+            footer_lines.append("  n: spawn another instance")
 
-    lines.append(_menu_row(_colorize(f" {footer} ", "2"), inner))
+    for fl in footer_lines:
+        lines.append(_menu_row(fl, inner))
     lines.append(_box_bot(inner))
 
     sys.stdout.write("\n".join(lines) + "\n")
@@ -710,12 +713,15 @@ def _render_attach_menu(rows: list[dict[str, object]], idx: int) -> None:
 def _read_menu_key() -> str:
     ch = sys.stdin.read(1)
     if ch == "\x1b":
-        # Use a short timeout to distinguish bare Esc from an escape sequence.
-        # Falls back to always-ready when stdin is not a real fd (e.g. StringIO in tests).
+        # Distinguish a bare Esc from an escape sequence (e.g. arrow keys → \x1b[A).
+        # sys.stdin.read(1) may buffer ahead, so check Python's buffer first — if bytes
+        # are already there we don't need to call select (and select would falsely report
+        # the fd as not-ready because the bytes are in Python's buffer, not the kernel's).
         try:
-            ready = select.select([sys.stdin], [], [], 0.075)[0]
+            has_buffered = hasattr(sys.stdin, "buffer") and bool(sys.stdin.buffer.peek(1))
+            ready = True if has_buffered else bool(select.select([sys.stdin], [], [], 0.075)[0])
         except Exception:
-            ready = True
+            ready = True  # StringIO in tests: assume sequence continues
         if not ready:
             return "esc"
         nxt = sys.stdin.read(1)

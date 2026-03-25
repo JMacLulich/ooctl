@@ -472,7 +472,7 @@ def test_menu_row_handles_ansi_without_border_shift() -> None:
 
 
 def test_version_string_appears_in_version_constant() -> None:
-    assert cli._VERSION == "0.6.0"
+    assert cli._VERSION == "0.7.0"
 
 
 def test_read_menu_key_recognizes_csi_arrow_sequences(monkeypatch) -> None:
