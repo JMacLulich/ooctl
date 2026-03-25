@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import resource
 import subprocess
 from collections.abc import Sequence
 
@@ -64,6 +65,36 @@ def list_sessions() -> list[dict]:
     return rows
 
 
+def list_sessions_with_paths() -> list[dict]:
+    """Like list_sessions() but also returns the session working directory."""
+    try:
+        out = run(
+            [
+                "tmux",
+                "list-sessions",
+                "-F",
+                "#{session_name}\t#{session_attached}\t#{session_windows}\t#{session_path}",
+            ]
+        )
+    except TmuxError:
+        return []
+    rows = []
+    for line in out.splitlines():
+        parts = line.split("\t", 3)
+        if len(parts) < 4:
+            continue
+        name, attached, windows, path = parts
+        rows.append(
+            {
+                "name": name,
+                "attached": attached == "1",
+                "windows": int(windows),
+                "path": path,
+            }
+        )
+    return rows
+
+
 def new_session(name: str, workdir: str) -> None:
     run(["tmux", "new-session", "-d", "-s", name, "-n", "main", "-c", workdir])
 
@@ -76,7 +107,27 @@ def send_keys(target: str, keys: list[str]) -> None:
     run(["tmux", "send-keys", "-t", target, *keys])
 
 
+def _ensure_attach_nofile_limit(minimum: int = 1024) -> None:
+    try:
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    except (AttributeError, OSError, ValueError):
+        return
+
+    target = max(soft, minimum)
+    if hard != resource.RLIM_INFINITY:
+        target = min(target, hard)
+
+    if target <= soft:
+        return
+
+    try:
+        resource.setrlimit(resource.RLIMIT_NOFILE, (target, hard))
+    except (OSError, ValueError):
+        return
+
+
 def attach(name: str, control_mode: bool = False) -> None:
+    _ensure_attach_nofile_limit()
     cmd = ["tmux"]
     if control_mode:
         cmd.append("-CC")

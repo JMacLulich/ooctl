@@ -38,6 +38,9 @@ def test_setup_dry_run_keeps_tmux_conf_unchanged(tmp_path: Path, monkeypatch) ->
     assert result["mode"] == "osc52"
     assert result["changes"]["tmux_conf_changed"] is True
     assert clipboard.MARKER_BEGIN in result["snippet"]
+    assert 'set -g mouse "on"' in result["include_text"]
+    assert 'bind-key -n MouseDrag1Pane if-shell -F "#{mouse_any_flag}"' in result["include_text"]
+    assert "bind-key -T copy-mode-vi MouseDragEnd1Pane" in result["include_text"]
     assert '@oc_clipboard_mode "osc52"' in result["include_text"]
     assert tmux_conf.read_text(encoding="utf-8") == "set -g mouse on\n"
 

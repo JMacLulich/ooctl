@@ -189,13 +189,34 @@ def _render_include(
     key = "Y" if bind_keys == "minimal" else "y"
     lines = [
         "# Managed by occtl. Re-run `oc clipboard setup` to update.",
+        "set -s set-clipboard on",
+        "set -g allow-passthrough on",
+        "set -as terminal-features ',xterm*:clipboard'",
+        'set -g mouse "on"',
         'set -g @oc_clipboard_loaded "1"',
         f'set -g @oc_clipboard_mode "{mode}"',
         f'set -g @oc_clipboard_pipe "{pipe_cmd}"',
     ]
 
+    escaped = pipe_cmd.replace('"', '\\"')
+    lines.extend(
+        [
+            (
+                'bind-key -n MouseDrag1Pane if-shell -F "#{mouse_any_flag}" '
+                '"send-keys -M" "copy-mode -M"'
+            ),
+            (
+                f"bind-key -T copy-mode-vi MouseDragEnd1Pane "
+                f'send-keys -X copy-pipe-and-cancel "{escaped}"'
+            ),
+            (
+                f"bind-key -T copy-mode MouseDragEnd1Pane "
+                f'send-keys -X copy-pipe-and-cancel "{escaped}"'
+            ),
+        ]
+    )
+
     if bind_keys != "none":
-        escaped = pipe_cmd.replace('"', '\\"')
         lines.extend(
             [
                 (f'bind-key -T copy-mode-vi {key} send-keys -X copy-pipe-and-cancel "{escaped}"'),

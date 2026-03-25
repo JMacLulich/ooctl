@@ -143,7 +143,8 @@ def _clipboard_attach_hints() -> list[str]:
                 "`oc clipboard setup --mode auto --reload`"
             )
             hints.append(
-                "clipboard: after setup, enter tmux copy mode and press `Y`; then run "
+                "clipboard: after setup, in iTerm2 use Option-drag for local visual copy, or "
+                "use `Ctrl-b` `[` for tmux copy mode; then run "
                 "`oc clipboard verify` to confirm local paste works"
             )
         return hints
@@ -184,7 +185,10 @@ def _clipboard_attach_hints() -> list[str]:
         )
 
     if hints and ssh_session and selected_mode == "osc52" and "tmux_not_loaded" not in reasons:
-        hints.append("clipboard: once working, use tmux copy mode + `Y` for remote-to-local copy")
+        hints.append(
+            "clipboard: in iTerm2, Option-drag does local copy; for tmux-aware copy, "
+            "use `Ctrl-b` `[`"
+        )
 
     return hints
 
@@ -390,30 +394,77 @@ def cmd_attach(args: argparse.Namespace) -> int:
 
 def _build_attach_menu_rows() -> list[dict[str, object]]:
     mappings = config.load_mappings()
-    sessions = {row["name"]: row for row in tmux.list_sessions()}
+    all_sessions = tmux.list_sessions_with_paths()
     recent = config.get_recent_attaches()
     recent_rank = {name: i for i, name in enumerate(recent)}
-    names = sorted(
-        set(mappings.keys()) | set(sessions.keys()),
-        key=lambda name: (recent_rank.get(name, len(recent_rank) + 1), name),
-    )
-
     focus = config.get_focus()
+
+    # Resolve canonical (expanded) mapped paths for comparison
+    {str(Path(p).expanduser().resolve()) for p in mappings.values()}
+
+    def _resolve_path(p: str) -> str:
+        try:
+            return str(Path(p).expanduser().resolve())
+        except Exception:
+            return p
+
+    # A session is "claimed" by a mapping if its name matches the mapping key
+    # OR its working directory matches the mapped path.
+    def _instances_for_mapping(mapping_name: str, mapped_dir: str) -> list[dict]:
+        canonical = _resolve_path(mapped_dir) if mapped_dir else ""
+        return [
+            s
+            for s in all_sessions
+            if s["name"] == mapping_name or (canonical and _resolve_path(s["path"]) == canonical)
+        ]
+
+    claimed_names: set[str] = set()
+    mapping_instances: dict[str, list[dict]] = {}
+    for mapping_name, mapped_dir in mappings.items():
+        instances = _instances_for_mapping(mapping_name, mapped_dir)
+        mapping_instances[mapping_name] = instances
+        for s in instances:
+            claimed_names.add(s["name"])
+
     rows: list[dict[str, object]] = []
-    for name in names:
-        live = sessions.get(name)
-        mapped = mappings.get(name, "")
+
+    # One row per mapping key, sorted by recency then name
+    for name in sorted(
+        mappings.keys(),
+        key=lambda n: (recent_rank.get(n, len(recent_rank) + 1), n),
+    ):
+        mapped = mappings[name]
+        instances = mapping_instances[name]
+        running = len(instances) > 0
         rows.append(
             {
                 "name": name,
                 "mapped_dir": mapped,
-                "running": bool(live),
-                "attached": bool(live and live["attached"]),
-                "windows": int(live["windows"]) if live else 0,
+                "running": running,
+                "attached": any(s["attached"] for s in instances),
+                "windows": sum(s["windows"] for s in instances),
                 "focused": name == focus,
+                "instances": instances,
                 "exit": False,
             }
         )
+
+    # Unclaimed running sessions (not matched to any mapping)
+    for s in all_sessions:
+        if s["name"] not in claimed_names:
+            rows.append(
+                {
+                    "name": s["name"],
+                    "mapped_dir": "",
+                    "running": True,
+                    "attached": s["attached"],
+                    "windows": s["windows"],
+                    "focused": s["name"] == focus,
+                    "instances": [s],
+                    "exit": False,
+                }
+            )
+
     rows.append(
         {
             "name": "Exit",
@@ -422,6 +473,7 @@ def _build_attach_menu_rows() -> list[dict[str, object]]:
             "attached": False,
             "windows": 0,
             "focused": False,
+            "instances": [],
             "exit": True,
         }
     )
@@ -544,8 +596,13 @@ def _render_attach_menu(rows: list[dict[str, object]], idx: int) -> None:
                 print(line)
             continue
 
-        state = "RUNNING" if bool(row["running"]) else "STOPPED"
-        state_rendered = _colorize(state, "32") if state == "RUNNING" else _colorize(state, "31")
+        instances = list(row.get("instances", []))
+        n = len(instances)
+        if bool(row["running"]):
+            state_label = f"RUNNING\u00d7{n}" if n > 1 else "RUNNING"
+            state_rendered = _colorize(state_label, "32")
+        else:
+            state_rendered = _colorize("STOPPED", "31")
         name = _fit_text(str(row["name"]), name_w)
         line = _menu_row(f" {cursor} {name.ljust(name_w)}  {state_rendered}", inner)
         if selected:
@@ -560,12 +617,17 @@ def _render_attach_menu(rows: list[dict[str, object]], idx: int) -> None:
         footer = " Exit without attaching "
     else:
         mapped = _compact_path(str(selected["mapped_dir"]))
-        action = "attach" if bool(selected["running"]) else "start+attach"
+        n_inst = len(list(selected.get("instances", [])))
+        if bool(selected["running"]):
+            action = "select instance" if n_inst > 1 else "attach"
+        else:
+            action = "start+attach"
         idle = _session_idle_seconds(str(selected["name"])) if bool(selected["running"]) else None
         idle_text = f"{idle}s" if idle is not None else "n/a"
+        inst_hint = f" | {n_inst} instances" if n_inst > 1 else ""
         footer = (
             f" Session: {selected['name']} | Action: {action} | Idle: {idle_text}"
-            f" | Project: {mapped} "
+            f" | Project: {mapped}{inst_hint} "
         )
     print(_menu_row(footer, inner))
     print(_menu_border(inner))
@@ -593,6 +655,82 @@ def _read_menu_key() -> str:
     if ch in {"r", "R"}:
         return "remap"
     return "other"
+
+
+def _render_instance_submenu(
+    mapping_name: str,
+    mapped_dir: str,
+    instances: list[dict],
+    idx: int,
+    inner: int,
+) -> None:
+    print("\033[2J\033[H", end="")
+    name_w = max(20, min(42, inner - 22))
+    print(_menu_border(inner))
+    print(_menu_row(f" SELECT INSTANCE: {mapping_name} ", inner))
+    print(_menu_row(f" {_compact_path(mapped_dir)} ", inner))
+    print(_menu_border(inner))
+    print(_menu_row(" Up/Down/j/k: move   Enter: attach   Esc/q: back ", inner))
+    print(_menu_border(inner))
+    print(_menu_row("   SESSION NAME".ljust(name_w + 5) + "STATE", inner))
+    print(_menu_border(inner))
+
+    for i, inst in enumerate(instances):
+        selected = i == idx
+        cursor = ">" if selected else " "
+        tags = ["ATTACHED"] if inst["attached"] else []
+        tags.append(f"W:{inst['windows']}")
+        state_rendered = _colorize("RUNNING", "32")
+        tag_str = " ".join(tags)
+        name = _fit_text(str(inst["name"]), name_w)
+        line = _menu_row(f" {cursor} {name.ljust(name_w)}  {state_rendered} {tag_str}", inner)
+        if selected:
+            print(f"\033[7m{line}\033[0m")
+        else:
+            print(line)
+
+    print(_menu_border(inner))
+    sel = instances[idx]
+    idle = _session_idle_seconds(str(sel["name"]))
+    idle_text = f"{idle}s" if idle is not None else "n/a"
+    footer = f" Session: {sel['name']} | Idle: {idle_text} "
+    print(_menu_row(footer, inner))
+    print(_menu_border(inner))
+
+
+def _choose_instance_submenu(
+    mapping_name: str,
+    mapped_dir: str,
+    instances: list[dict],
+) -> str | None:
+    """Show a sub-menu to pick among multiple running instances.
+
+    Returns the chosen tmux session name, or None if the user pressed Esc/q to go back.
+    Assumes the terminal is already in cbreak mode.
+    """
+    cols = shutil.get_terminal_size(fallback=(100, 30)).columns
+    menu_min_width = 56
+    menu_max_width = 88
+    side_padding = 8
+    available = max(0, cols - side_padding)
+    inner = min(menu_max_width, available)
+    if inner < menu_min_width:
+        inner = max(20, cols - 2)
+    inner = min(inner, max(0, cols - 2))
+
+    idx = 0
+    while True:
+        _render_instance_submenu(mapping_name, mapped_dir, instances, idx, inner)
+        key = _read_menu_key()
+        if key == "up":
+            idx = (idx - 1) % len(instances)
+        elif key == "down":
+            idx = (idx + 1) % len(instances)
+        elif key == "enter":
+            print("\033[2J\033[H", end="")
+            return str(instances[idx]["name"])
+        elif key in {"quit", "esc"}:
+            return None
 
 
 def _path_completer(text: str, state: int) -> str | None:
@@ -678,10 +816,26 @@ def _choose_attach_session_interactive() -> str | None:
             elif key == "down":
                 idx = (idx + 1) % len(rows)
             elif key == "enter":
-                print("\033[2J\033[H", end="")
                 if rows[idx]["exit"]:
+                    print("\033[2J\033[H", end="")
                     return None
-                return str(rows[idx]["name"])
+                instances = list(rows[idx].get("instances", []))
+                if len(instances) > 1:
+                    result = _choose_instance_submenu(
+                        mapping_name=str(rows[idx]["name"]),
+                        mapped_dir=str(rows[idx]["mapped_dir"]),
+                        instances=instances,
+                    )
+                    if result is not None:
+                        return result
+                    # None = user pressed Esc → fall through to re-render main menu
+                elif len(instances) == 1:
+                    print("\033[2J\033[H", end="")
+                    return str(instances[0]["name"])
+                else:
+                    # No running instances → return mapping key so cmd_attach creates it
+                    print("\033[2J\033[H", end="")
+                    return str(rows[idx]["name"])
             elif key == "remap":
                 if rows[idx]["exit"]:
                     continue
@@ -1232,8 +1386,8 @@ def build_parser() -> argparse.ArgumentParser:
     clip_setup.add_argument(
         "--bind-keys",
         choices=("minimal", "copy-mode-y", "none"),
-        default="minimal",
-        help="minimal binds copy-mode Y; copy-mode-y overrides y",
+        default="copy-mode-y",
+        help="copy-mode-y binds lowercase y in copy mode; minimal binds uppercase Y",
     )
     clip_setup.add_argument("--follow-symlink", action="store_true")
     clip_setup.set_defaults(fn=cmd_clipboard_setup)

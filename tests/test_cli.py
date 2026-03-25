@@ -74,6 +74,13 @@ def test_clipboard_setup_parser_accepts_flags() -> None:
     assert args.reload is True
 
 
+def test_clipboard_setup_parser_defaults_to_copy_mode_y() -> None:
+    parser = cli.build_parser()
+    args = parser.parse_args(["clipboard", "setup"])
+
+    assert args.bind_keys == "copy-mode-y"
+
+
 def test_clipboard_status_parser_supports_json() -> None:
     parser = cli.build_parser()
     args = parser.parse_args(["clipboard", "status", "--json"])
@@ -313,7 +320,8 @@ def test_cmd_attach_prints_setup_hint_for_ssh_when_clipboard_unconfigured(
     out = capsys.readouterr().out
     assert "oc clipboard setup --mode auto --reload" in out
     assert "oc clipboard verify" in out
-    assert "copy mode and press `Y`" in out
+    assert "Option-drag" in out
+    assert "Ctrl-b` `[`" in out
 
 
 def test_cmd_attach_prints_reload_hint_when_clipboard_not_loaded(monkeypatch, capsys) -> None:
@@ -378,7 +386,8 @@ def test_cmd_attach_prints_terminal_fix_hint_when_osc52_emits_but_paste_fails(
     assert rc == 0
     out = capsys.readouterr().out
     assert "enable OSC52 clipboard access in your terminal" in out
-    assert "copy mode + `Y`" in out
+    assert "Option-drag" in out
+    assert "Ctrl-b` `[`" in out
 
 
 def test_cmd_attach_stays_quiet_when_clipboard_looks_healthy(monkeypatch, capsys) -> None:
@@ -420,7 +429,7 @@ def test_attach_menu_sorts_recent_sessions_first(monkeypatch) -> None:
             "charlie": "/tmp/charlie",
         },
     )
-    monkeypatch.setattr(cli.tmux, "list_sessions", lambda: [])
+    monkeypatch.setattr(cli.tmux, "list_sessions_with_paths", lambda: [])
     monkeypatch.setattr(cli.config, "get_focus", lambda: "")
     monkeypatch.setattr(cli.config, "get_recent_attaches", lambda: ["charlie", "alpha"])
 
@@ -432,8 +441,9 @@ def test_attach_menu_sorts_recent_sessions_first(monkeypatch) -> None:
 
 def test_attach_menu_contains_exit_option(monkeypatch) -> None:
     monkeypatch.setattr(cli.config, "load_mappings", lambda: {"filter2": "/tmp/filter2"})
-    monkeypatch.setattr(cli.tmux, "list_sessions", lambda: [])
+    monkeypatch.setattr(cli.tmux, "list_sessions_with_paths", lambda: [])
     monkeypatch.setattr(cli.config, "get_focus", lambda: "")
+    monkeypatch.setattr(cli.config, "get_recent_attaches", lambda: [])
 
     rows = cli._build_attach_menu_rows()
 
@@ -621,3 +631,103 @@ def test_cmd_watch_triggers_stall_alert_when_idle(monkeypatch, capsys) -> None:
     assert calls["router_message"] is not None
     assert "session=infra" in calls["router_message"]
     assert "stall_pattern=" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# _build_attach_menu_rows — multi-instance support
+# ---------------------------------------------------------------------------
+
+
+def _make_session(name: str, path: str, attached: bool = False, windows: int = 1) -> dict:
+    return {"name": name, "attached": attached, "windows": windows, "path": path}
+
+
+def test_build_attach_menu_rows_groups_sessions_by_mapped_path(monkeypatch, tmp_path: Path) -> None:
+    """Sessions whose path matches a mapping are listed as instances of that mapping."""
+    proj = str(tmp_path / "myproject")
+    monkeypatch.setattr(cli.config, "load_mappings", lambda: {"myproject": proj})
+    monkeypatch.setattr(cli.config, "get_recent_attaches", lambda: [])
+    monkeypatch.setattr(cli.config, "get_focus", lambda: "")
+    monkeypatch.setattr(
+        cli.tmux,
+        "list_sessions_with_paths",
+        lambda: [
+            _make_session("myproject", proj),
+            _make_session("myproject-worker", proj),
+        ],
+    )
+
+    rows = cli._build_attach_menu_rows()
+    data = [r for r in rows if not r["exit"]]
+
+    assert len(data) == 1
+    assert data[0]["name"] == "myproject"
+    assert data[0]["running"] is True
+    instances = data[0]["instances"]
+    assert len(instances) == 2
+    assert {i["name"] for i in instances} == {"myproject", "myproject-worker"}
+
+
+def test_build_attach_menu_rows_single_session_no_subgroup(monkeypatch, tmp_path: Path) -> None:
+    """A mapping with exactly one matching session has instances=[that session]."""
+    proj = str(tmp_path / "myproject")
+    monkeypatch.setattr(cli.config, "load_mappings", lambda: {"myproject": proj})
+    monkeypatch.setattr(cli.config, "get_recent_attaches", lambda: [])
+    monkeypatch.setattr(cli.config, "get_focus", lambda: "")
+    monkeypatch.setattr(
+        cli.tmux,
+        "list_sessions_with_paths",
+        lambda: [_make_session("myproject", proj)],
+    )
+
+    rows = cli._build_attach_menu_rows()
+    data = [r for r in rows if not r["exit"]]
+
+    assert len(data) == 1
+    assert len(data[0]["instances"]) == 1
+    assert data[0]["instances"][0]["name"] == "myproject"
+
+
+def test_build_attach_menu_rows_unmapped_session_appears_standalone(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """A running session whose path doesn't match any mapping appears as its own row."""
+    proj = str(tmp_path / "myproject")
+    other = str(tmp_path / "other")
+    monkeypatch.setattr(cli.config, "load_mappings", lambda: {"myproject": proj})
+    monkeypatch.setattr(cli.config, "get_recent_attaches", lambda: [])
+    monkeypatch.setattr(cli.config, "get_focus", lambda: "")
+    monkeypatch.setattr(
+        cli.tmux,
+        "list_sessions_with_paths",
+        lambda: [
+            _make_session("myproject", proj),
+            _make_session("orphan", other),
+        ],
+    )
+
+    rows = cli._build_attach_menu_rows()
+    data = [r for r in rows if not r["exit"]]
+
+    names = [r["name"] for r in data]
+    assert "myproject" in names
+    assert "orphan" in names
+    assert len(data) == 2
+
+
+def test_build_attach_menu_rows_stopped_mapping_has_empty_instances(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """A mapping with no running sessions has instances=[] and running=False."""
+    proj = str(tmp_path / "myproject")
+    monkeypatch.setattr(cli.config, "load_mappings", lambda: {"myproject": proj})
+    monkeypatch.setattr(cli.config, "get_recent_attaches", lambda: [])
+    monkeypatch.setattr(cli.config, "get_focus", lambda: "")
+    monkeypatch.setattr(cli.tmux, "list_sessions_with_paths", lambda: [])
+
+    rows = cli._build_attach_menu_rows()
+    data = [r for r in rows if not r["exit"]]
+
+    assert len(data) == 1
+    assert data[0]["running"] is False
+    assert data[0]["instances"] == []

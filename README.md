@@ -99,7 +99,7 @@ oc clipboard verify
 
 Notes:
 - Run setup on the same host where tmux runs.
-- Default keybind mode is non-invasive: copy-mode `Y` (not `y`).
+- Default setup enables tmux mouse support, auto-copies on mouse drag release, and binds copy-mode `y` as a fallback.
 - If your terminal blocks OSC52, `verify` may show emission success but clipboard failure.
 - Uninstall managed config:
 
