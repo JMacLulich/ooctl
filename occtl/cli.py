@@ -712,6 +712,10 @@ def _read_menu_key() -> str:
                 return "up"
             if third == "B":
                 return "down"
+            if third == "C":
+                return "right"
+            if third == "D":
+                return "left"
         return "esc"
     if ch in {"k", "K"}:
         return "up"
@@ -842,6 +846,26 @@ def _choose_attach_session_interactive() -> str | None:
                 else:
                     print("\033[2J\033[H", end="")
                     return str(row["name"])
+            elif key == "right":
+                row = rows[idx]
+                if row.get("row_type") == "group" and not row["expanded"]:
+                    mname = str(row["mapping_name"])
+                    expanded.add(mname)
+                    rows = _build_attach_menu_rows(expanded)
+                    for i, r in enumerate(rows):
+                        if r.get("row_type") == "group" and r["mapping_name"] == mname:
+                            idx = i
+                            break
+            elif key == "left":
+                row = rows[idx]
+                mapping_name = str(row.get("mapping_name", ""))
+                if mapping_name in expanded:
+                    expanded.discard(mapping_name)
+                    rows = _build_attach_menu_rows(expanded)
+                    for i, r in enumerate(rows):
+                        if r.get("row_type") == "group" and r["mapping_name"] == mapping_name:
+                            idx = i
+                            break
             elif key == "remap":
                 if rows[idx]["exit"]:
                     continue
