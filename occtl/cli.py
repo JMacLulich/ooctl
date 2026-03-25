@@ -541,11 +541,14 @@ def _session_idle_seconds(name: str) -> int | None:
         return None
 
 
+_VERSION = "0.4.0"
+
+
 def _attach_banner_text() -> str:
     host = socket.gethostname()
     focus = config.get_focus() or "(none)"
     now = datetime.now().strftime("%H:%M")
-    return f" Host: {host} | Focus: {focus} | {now} "
+    return f" Host: {host} | Focus: {focus} | {now} | v{_VERSION} "
 
 
 def _session_status_text(row: dict[str, object]) -> str:
@@ -580,7 +583,12 @@ def _render_attach_menu(rows: list[dict[str, object]], idx: int) -> None:
     print(_menu_row(" OC SESSION MANAGER ", inner))
     print(_menu_row(_attach_banner_text(), inner))
     print(_menu_border(inner))
-    print(_menu_row(" Up/Down/j/k: move   Enter: attach   r: remap dir   q/Esc: exit ", inner))
+    print(
+        _menu_row(
+            " Up/Down/j/k: move   Enter: attach   n: new instance   r: remap   q/Esc: exit ",
+            inner,
+        )
+    )
     print(_menu_border(inner))
     print(_menu_row("   SESSION".ljust(name_w + 5) + "STATE", inner))
     print(_menu_border(inner))
@@ -625,9 +633,10 @@ def _render_attach_menu(rows: list[dict[str, object]], idx: int) -> None:
         idle = _session_idle_seconds(str(selected["name"])) if bool(selected["running"]) else None
         idle_text = f"{idle}s" if idle is not None else "n/a"
         inst_hint = f" | {n_inst} instances" if n_inst > 1 else ""
+        new_hint = " | n: spawn another" if selected["mapped_dir"] else ""
         footer = (
             f" Session: {selected['name']} | Action: {action} | Idle: {idle_text}"
-            f" | Project: {mapped}{inst_hint} "
+            f" | Project: {mapped}{inst_hint}{new_hint} "
         )
     print(_menu_row(footer, inner))
     print(_menu_border(inner))
@@ -654,7 +663,20 @@ def _read_menu_key() -> str:
         return "quit"
     if ch in {"r", "R"}:
         return "remap"
+    if ch in {"n", "N"}:
+        return "new"
     return "other"
+
+
+def _next_session_name(base: str) -> str:
+    """Return the next available session name based on base, e.g. 'cash claw 2'."""
+    if not tmux.has_session(base):
+        return base
+    for i in range(2, 100):
+        candidate = f"{base} {i}"
+        if not tmux.has_session(candidate):
+            return candidate
+    return f"{base} {int(time.time())}"
 
 
 def _render_instance_submenu(
@@ -849,6 +871,24 @@ def _choose_attach_session_interactive() -> str | None:
                         if r["name"] == session_name:
                             idx = i
                             break
+            elif key == "new":
+                row = rows[idx]
+                if row["exit"] or not row["mapped_dir"]:
+                    continue
+                mapped_dir = str(row["mapped_dir"])
+                if not Path(mapped_dir).exists():
+                    continue
+                new_name = _next_session_name(str(row["name"]))
+                try:
+                    tmux.new_session(new_name, mapped_dir)
+                    tmux.send_keys(f"{new_name}:main", ["opencode", "Enter"])
+                    tmux.new_window(new_name, "logs", mapped_dir)
+                    tmux.new_window(new_name, "shell", mapped_dir)
+                except tmux.TmuxError:
+                    rows = _build_attach_menu_rows()
+                    continue
+                print("\033[2J\033[H", end="")
+                return new_name
             elif key in {"quit", "esc"}:
                 print("\033[2J\033[H", end="")
                 return None
