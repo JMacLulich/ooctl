@@ -887,8 +887,24 @@ def _choose_attach_session_interactive() -> str | None:
                 except tmux.TmuxError:
                     rows = _build_attach_menu_rows()
                     continue
-                print("\033[2J\033[H", end="")
-                return new_name
+                # Refresh rows then show instance picker for the updated session
+                rows = _build_attach_menu_rows()
+                for i, r in enumerate(rows):
+                    if r["name"] == row["name"]:
+                        idx = i
+                        break
+                instances = list(rows[idx].get("instances", []))
+                if len(instances) > 1:
+                    result = _choose_instance_submenu(
+                        mapping_name=str(rows[idx]["name"]),
+                        mapped_dir=str(rows[idx]["mapped_dir"]),
+                        instances=instances,
+                    )
+                    if result is not None:
+                        return result
+                else:
+                    print("\033[2J\033[H", end="")
+                    return new_name
             elif key in {"quit", "esc"}:
                 print("\033[2J\033[H", end="")
                 return None
