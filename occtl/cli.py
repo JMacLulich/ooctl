@@ -399,17 +399,13 @@ def _build_attach_menu_rows() -> list[dict[str, object]]:
     recent_rank = {name: i for i, name in enumerate(recent)}
     focus = config.get_focus()
 
-    # Resolve canonical (expanded) mapped paths for comparison
-    {str(Path(p).expanduser().resolve()) for p in mappings.values()}
-
     def _resolve_path(p: str) -> str:
         try:
             return str(Path(p).expanduser().resolve())
         except Exception:
             return p
 
-    # A session is "claimed" by a mapping if its name matches the mapping key
-    # OR its working directory matches the mapped path.
+    # Sessions claimed by a mapping: name match OR path match
     def _instances_for_mapping(mapping_name: str, mapped_dir: str) -> list[dict]:
         canonical = _resolve_path(mapped_dir) if mapped_dir else ""
         return [
@@ -428,39 +424,54 @@ def _build_attach_menu_rows() -> list[dict[str, object]]:
 
     rows: list[dict[str, object]] = []
 
-    # One row per mapping key, sorted by recency then name
-    for name in sorted(
+    # Expand each mapping into one row per running instance (flat list, grouped by mapping).
+    # If no instances are running, emit a single stopped row for the mapping key.
+    for mapping_name in sorted(
         mappings.keys(),
         key=lambda n: (recent_rank.get(n, len(recent_rank) + 1), n),
     ):
-        mapped = mappings[name]
-        instances = mapping_instances[name]
-        running = len(instances) > 0
-        rows.append(
-            {
-                "name": name,
-                "mapped_dir": mapped,
-                "running": running,
-                "attached": any(s["attached"] for s in instances),
-                "windows": sum(s["windows"] for s in instances),
-                "focused": name == focus,
-                "instances": instances,
-                "exit": False,
-            }
-        )
+        mapped_dir = mappings[mapping_name]
+        instances = mapping_instances[mapping_name]
+        if instances:
+            for sess in instances:
+                rows.append(
+                    {
+                        "name": sess["name"],
+                        "mapping_name": mapping_name,
+                        "mapped_dir": mapped_dir,
+                        "running": True,
+                        "attached": sess["attached"],
+                        "windows": sess["windows"],
+                        "focused": sess["name"] == focus,
+                        "exit": False,
+                    }
+                )
+        else:
+            rows.append(
+                {
+                    "name": mapping_name,
+                    "mapping_name": mapping_name,
+                    "mapped_dir": mapped_dir,
+                    "running": False,
+                    "attached": False,
+                    "windows": 0,
+                    "focused": mapping_name == focus,
+                    "exit": False,
+                }
+            )
 
-    # Unclaimed running sessions (not matched to any mapping)
+    # Unclaimed running sessions (no matching mapping by name or path)
     for s in all_sessions:
         if s["name"] not in claimed_names:
             rows.append(
                 {
                     "name": s["name"],
+                    "mapping_name": s["name"],
                     "mapped_dir": "",
                     "running": True,
                     "attached": s["attached"],
                     "windows": s["windows"],
                     "focused": s["name"] == focus,
-                    "instances": [s],
                     "exit": False,
                 }
             )
@@ -468,12 +479,12 @@ def _build_attach_menu_rows() -> list[dict[str, object]]:
     rows.append(
         {
             "name": "Exit",
+            "mapping_name": "",
             "mapped_dir": "",
             "running": False,
             "attached": False,
             "windows": 0,
             "focused": False,
-            "instances": [],
             "exit": True,
         }
     )
@@ -604,11 +615,8 @@ def _render_attach_menu(rows: list[dict[str, object]], idx: int) -> None:
                 print(line)
             continue
 
-        instances = list(row.get("instances", []))
-        n = len(instances)
         if bool(row["running"]):
-            state_label = f"RUNNING\u00d7{n}" if n > 1 else "RUNNING"
-            state_rendered = _colorize(state_label, "32")
+            state_rendered = _colorize("RUNNING", "32")
         else:
             state_rendered = _colorize("STOPPED", "31")
         name = _fit_text(str(row["name"]), name_w)
@@ -625,18 +633,13 @@ def _render_attach_menu(rows: list[dict[str, object]], idx: int) -> None:
         footer = " Exit without attaching "
     else:
         mapped = _compact_path(str(selected["mapped_dir"]))
-        n_inst = len(list(selected.get("instances", [])))
-        if bool(selected["running"]):
-            action = "select instance" if n_inst > 1 else "attach"
-        else:
-            action = "start+attach"
+        action = "attach" if bool(selected["running"]) else "start+attach"
         idle = _session_idle_seconds(str(selected["name"])) if bool(selected["running"]) else None
         idle_text = f"{idle}s" if idle is not None else "n/a"
-        inst_hint = f" | {n_inst} instances" if n_inst > 1 else ""
         new_hint = " | n: spawn another" if selected["mapped_dir"] else ""
         footer = (
             f" Session: {selected['name']} | Action: {action} | Idle: {idle_text}"
-            f" | Project: {mapped}{inst_hint}{new_hint} "
+            f" | Project: {mapped}{new_hint} "
         )
     print(_menu_row(footer, inner))
     print(_menu_border(inner))
@@ -677,82 +680,6 @@ def _next_session_name(base: str) -> str:
         if not tmux.has_session(candidate):
             return candidate
     return f"{base} {int(time.time())}"
-
-
-def _render_instance_submenu(
-    mapping_name: str,
-    mapped_dir: str,
-    instances: list[dict],
-    idx: int,
-    inner: int,
-) -> None:
-    print("\033[2J\033[H", end="")
-    name_w = max(20, min(42, inner - 22))
-    print(_menu_border(inner))
-    print(_menu_row(f" SELECT INSTANCE: {mapping_name} ", inner))
-    print(_menu_row(f" {_compact_path(mapped_dir)} ", inner))
-    print(_menu_border(inner))
-    print(_menu_row(" Up/Down/j/k: move   Enter: attach   Esc/q: back ", inner))
-    print(_menu_border(inner))
-    print(_menu_row("   SESSION NAME".ljust(name_w + 5) + "STATE", inner))
-    print(_menu_border(inner))
-
-    for i, inst in enumerate(instances):
-        selected = i == idx
-        cursor = ">" if selected else " "
-        tags = ["ATTACHED"] if inst["attached"] else []
-        tags.append(f"W:{inst['windows']}")
-        state_rendered = _colorize("RUNNING", "32")
-        tag_str = " ".join(tags)
-        name = _fit_text(str(inst["name"]), name_w)
-        line = _menu_row(f" {cursor} {name.ljust(name_w)}  {state_rendered} {tag_str}", inner)
-        if selected:
-            print(f"\033[7m{line}\033[0m")
-        else:
-            print(line)
-
-    print(_menu_border(inner))
-    sel = instances[idx]
-    idle = _session_idle_seconds(str(sel["name"]))
-    idle_text = f"{idle}s" if idle is not None else "n/a"
-    footer = f" Session: {sel['name']} | Idle: {idle_text} "
-    print(_menu_row(footer, inner))
-    print(_menu_border(inner))
-
-
-def _choose_instance_submenu(
-    mapping_name: str,
-    mapped_dir: str,
-    instances: list[dict],
-) -> str | None:
-    """Show a sub-menu to pick among multiple running instances.
-
-    Returns the chosen tmux session name, or None if the user pressed Esc/q to go back.
-    Assumes the terminal is already in cbreak mode.
-    """
-    cols = shutil.get_terminal_size(fallback=(100, 30)).columns
-    menu_min_width = 56
-    menu_max_width = 88
-    side_padding = 8
-    available = max(0, cols - side_padding)
-    inner = min(menu_max_width, available)
-    if inner < menu_min_width:
-        inner = max(20, cols - 2)
-    inner = min(inner, max(0, cols - 2))
-
-    idx = 0
-    while True:
-        _render_instance_submenu(mapping_name, mapped_dir, instances, idx, inner)
-        key = _read_menu_key()
-        if key == "up":
-            idx = (idx - 1) % len(instances)
-        elif key == "down":
-            idx = (idx + 1) % len(instances)
-        elif key == "enter":
-            print("\033[2J\033[H", end="")
-            return str(instances[idx]["name"])
-        elif key in {"quit", "esc"}:
-            return None
 
 
 def _path_completer(text: str, state: int) -> str | None:
@@ -838,37 +765,21 @@ def _choose_attach_session_interactive() -> str | None:
             elif key == "down":
                 idx = (idx + 1) % len(rows)
             elif key == "enter":
+                print("\033[2J\033[H", end="")
                 if rows[idx]["exit"]:
-                    print("\033[2J\033[H", end="")
                     return None
-                instances = list(rows[idx].get("instances", []))
-                if len(instances) > 1:
-                    result = _choose_instance_submenu(
-                        mapping_name=str(rows[idx]["name"]),
-                        mapped_dir=str(rows[idx]["mapped_dir"]),
-                        instances=instances,
-                    )
-                    if result is not None:
-                        return result
-                    # None = user pressed Esc → fall through to re-render main menu
-                elif len(instances) == 1:
-                    print("\033[2J\033[H", end="")
-                    return str(instances[0]["name"])
-                else:
-                    # No running instances → return mapping key so cmd_attach creates it
-                    print("\033[2J\033[H", end="")
-                    return str(rows[idx]["name"])
+                return str(rows[idx]["name"])
             elif key == "remap":
                 if rows[idx]["exit"]:
                     continue
-                session_name = str(rows[idx]["name"])
+                mapping_name = str(rows[idx]["mapping_name"])
                 current_dir = str(rows[idx]["mapped_dir"])
-                new_path = _prompt_for_path(session_name, current_dir, fd, old)
+                new_path = _prompt_for_path(mapping_name, current_dir, fd, old)
                 if new_path:
-                    config.set_mapping(session_name, new_path)
+                    config.set_mapping(mapping_name, new_path)
                     rows = _build_attach_menu_rows()
                     for i, r in enumerate(rows):
-                        if r["name"] == session_name:
+                        if r["name"] == rows[idx]["name"]:
                             idx = i
                             break
             elif key == "new":
@@ -878,7 +789,7 @@ def _choose_attach_session_interactive() -> str | None:
                 mapped_dir = str(row["mapped_dir"])
                 if not Path(mapped_dir).exists():
                     continue
-                new_name = _next_session_name(str(row["name"]))
+                new_name = _next_session_name(str(row["mapping_name"]))
                 try:
                     tmux.new_session(new_name, mapped_dir)
                     tmux.send_keys(f"{new_name}:main", ["opencode", "Enter"])
@@ -887,24 +798,12 @@ def _choose_attach_session_interactive() -> str | None:
                 except tmux.TmuxError:
                     rows = _build_attach_menu_rows()
                     continue
-                # Refresh rows then show instance picker for the updated session
+                # Refresh so the new row appears; land on it so user can see it or press Enter
                 rows = _build_attach_menu_rows()
                 for i, r in enumerate(rows):
-                    if r["name"] == row["name"]:
+                    if r["name"] == new_name:
                         idx = i
                         break
-                instances = list(rows[idx].get("instances", []))
-                if len(instances) > 1:
-                    result = _choose_instance_submenu(
-                        mapping_name=str(rows[idx]["name"]),
-                        mapped_dir=str(rows[idx]["mapped_dir"]),
-                        instances=instances,
-                    )
-                    if result is not None:
-                        return result
-                else:
-                    print("\033[2J\033[H", end="")
-                    return new_name
             elif key in {"quit", "esc"}:
                 print("\033[2J\033[H", end="")
                 return None

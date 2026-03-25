@@ -643,7 +643,7 @@ def _make_session(name: str, path: str, attached: bool = False, windows: int = 1
 
 
 def test_build_attach_menu_rows_groups_sessions_by_mapped_path(monkeypatch, tmp_path: Path) -> None:
-    """Sessions whose path matches a mapping are listed as instances of that mapping."""
+    """Sessions sharing a mapped path each get their own row under that mapping."""
     proj = str(tmp_path / "myproject")
     monkeypatch.setattr(cli.config, "load_mappings", lambda: {"myproject": proj})
     monkeypatch.setattr(cli.config, "get_recent_attaches", lambda: [])
@@ -660,16 +660,16 @@ def test_build_attach_menu_rows_groups_sessions_by_mapped_path(monkeypatch, tmp_
     rows = cli._build_attach_menu_rows()
     data = [r for r in rows if not r["exit"]]
 
-    assert len(data) == 1
-    assert data[0]["name"] == "myproject"
-    assert data[0]["running"] is True
-    instances = data[0]["instances"]
-    assert len(instances) == 2
-    assert {i["name"] for i in instances} == {"myproject", "myproject-worker"}
+    # Two running rows, one per session, both under the same mapping
+    assert len(data) == 2
+    names = {r["name"] for r in data}
+    assert names == {"myproject", "myproject-worker"}
+    assert all(r["mapping_name"] == "myproject" for r in data)
+    assert all(r["running"] is True for r in data)
 
 
-def test_build_attach_menu_rows_single_session_no_subgroup(monkeypatch, tmp_path: Path) -> None:
-    """A mapping with exactly one matching session has instances=[that session]."""
+def test_build_attach_menu_rows_single_session_one_row(monkeypatch, tmp_path: Path) -> None:
+    """A mapping with one running session produces exactly one row."""
     proj = str(tmp_path / "myproject")
     monkeypatch.setattr(cli.config, "load_mappings", lambda: {"myproject": proj})
     monkeypatch.setattr(cli.config, "get_recent_attaches", lambda: [])
@@ -684,8 +684,8 @@ def test_build_attach_menu_rows_single_session_no_subgroup(monkeypatch, tmp_path
     data = [r for r in rows if not r["exit"]]
 
     assert len(data) == 1
-    assert len(data[0]["instances"]) == 1
-    assert data[0]["instances"][0]["name"] == "myproject"
+    assert data[0]["name"] == "myproject"
+    assert data[0]["running"] is True
 
 
 def test_build_attach_menu_rows_unmapped_session_appears_standalone(
@@ -715,10 +715,8 @@ def test_build_attach_menu_rows_unmapped_session_appears_standalone(
     assert len(data) == 2
 
 
-def test_build_attach_menu_rows_stopped_mapping_has_empty_instances(
-    monkeypatch, tmp_path: Path
-) -> None:
-    """A mapping with no running sessions has instances=[] and running=False."""
+def test_build_attach_menu_rows_stopped_mapping_has_one_row(monkeypatch, tmp_path: Path) -> None:
+    """A mapping with no running sessions produces a single stopped row."""
     proj = str(tmp_path / "myproject")
     monkeypatch.setattr(cli.config, "load_mappings", lambda: {"myproject": proj})
     monkeypatch.setattr(cli.config, "get_recent_attaches", lambda: [])
@@ -729,5 +727,5 @@ def test_build_attach_menu_rows_stopped_mapping_has_empty_instances(
     data = [r for r in rows if not r["exit"]]
 
     assert len(data) == 1
+    assert data[0]["name"] == "myproject"
     assert data[0]["running"] is False
-    assert data[0]["instances"] == []
