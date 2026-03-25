@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import re
+import select
 import shutil
 import socket
 import sys
@@ -556,8 +557,20 @@ def _compact_path(path: str, max_segments: int = 3) -> str:
     return f".../{tail}"
 
 
-def _menu_border(inner_width: int) -> str:
-    return "+" + ("-" * inner_width) + "+"
+def _box_top(inner: int, title: str = "") -> str:
+    if title:
+        t = f" {title} "
+        dashes = max(0, inner - len(t) - 1)
+        return "┌─" + t + "─" * dashes + "┐"
+    return "┌" + "─" * inner + "┐"
+
+
+def _box_mid(inner: int) -> str:
+    return "├" + "─" * inner + "┤"
+
+
+def _box_bot(inner: int) -> str:
+    return "└" + "─" * inner + "┘"
 
 
 def _menu_row(text: str, inner_width: int) -> str:
@@ -565,7 +578,12 @@ def _menu_row(text: str, inner_width: int) -> str:
     if visible > inner_width:
         text = _fit_text(ANSI_RE.sub("", text), inner_width)
         visible = len(text)
-    return "|" + text + (" " * max(0, inner_width - visible)) + "|"
+    return "│" + text + (" " * max(0, inner_width - visible)) + "│"
+
+
+def _visible_ljust(text: str, width: int) -> str:
+    vis = len(ANSI_RE.sub("", text))
+    return text + " " * max(0, width - vis)
 
 
 def _supports_color() -> bool:
@@ -595,57 +613,39 @@ def _session_idle_seconds(name: str) -> int | None:
         return None
 
 
-_VERSION = "0.5.0"
+_VERSION = "0.6.0"
 
-
-def _attach_banner_text() -> str:
-    host = socket.gethostname()
-    focus = config.get_focus() or "(none)"
-    now = datetime.now().strftime("%H:%M")
-    return f" Host: {host} | Focus: {focus} | {now} | v{_VERSION} "
-
-
-def _session_status_text(row: dict[str, object]) -> str:
-    if row["exit"]:
-        return ""
-    parts = ["RUNNING" if row["running"] else "STOPPED"]
-    if row["focused"]:
-        parts.append("FOCUS")
-    if row["attached"]:
-        parts.append("ATTACHED")
-    if row["running"]:
-        parts.append(f"WIN:{row['windows']}")
-    return " ".join(parts)
+# Visible width of the status indicator ("● running" / "○ stopped")
+_STATUS_W = 9
 
 
 def _render_attach_menu(rows: list[dict[str, object]], idx: int) -> None:
-    print("\033[2J\033[H", end="")
     cols = shutil.get_terminal_size(fallback=(100, 30)).columns
-    # Keep menu narrower than terminal to avoid wrapping/stair-stepping on Termius,
-    # while never exceeding available width on narrow terminals.
-    menu_min_width = 56
-    menu_max_width = 88
-    side_padding = 8
-    available = max(0, cols - side_padding)
-    inner = min(menu_max_width, available)
-    if inner < menu_min_width:
-        inner = max(20, cols - 2)
-    inner = min(inner, max(0, cols - 2))
-    name_w = max(20, min(42, inner - 22))
+    inner = max(40, cols - 2)  # full terminal width, minus the two border chars
+    # Layout per row: "  {cursor} {name_w chars}  {status}  "
+    # name_w = inner - 4 (prefix) - gap - _STATUS_W - 2 (right margin), gap fixed at 2
+    name_w = max(16, min(60, inner - 4 - 2 - _STATUS_W - 2))
+    gap = max(2, inner - 4 - name_w - _STATUS_W - 2)
 
-    print(_menu_border(inner))
-    print(_menu_row(" OC SESSION MANAGER ", inner))
-    print(_menu_row(_attach_banner_text(), inner))
-    print(_menu_border(inner))
-    print(
+    host = socket.gethostname()
+    focus = config.get_focus() or "none"
+    now = datetime.now().strftime("%H:%M")
+    info = f"  {host}  ·  {focus}  ·  {now}  ·  v{_VERSION}"
+    hints = "  ↑↓/jk · Enter open · → expand · ← collapse · n new · r remap · q quit"
+
+    lines: list[str] = [
+        "\033[2J\033[H",
+        _box_top(inner, "OC SESSION MANAGER"),
+        _menu_row(_colorize(info, "2"), inner),
+        _box_mid(inner),
+        _menu_row(_colorize(hints, "2"), inner),
+        _box_mid(inner),
         _menu_row(
-            " Up/Down/j/k: move   Enter: expand/attach   n: new   r: remap   q/Esc: exit ",
+            _colorize("  SESSION".ljust(name_w + 4), "2") + " " * gap + _colorize("STATE", "2"),
             inner,
-        )
-    )
-    print(_menu_border(inner))
-    print(_menu_row("   SESSION".ljust(name_w + 5) + "STATE", inner))
-    print(_menu_border(inner))
+        ),
+        _box_mid(inner),
+    ]
 
     for i, row in enumerate(rows):
         selected = i == idx
@@ -653,58 +653,71 @@ def _render_attach_menu(rows: list[dict[str, object]], idx: int) -> None:
         row_type = row.get("row_type", "leaf")
 
         if row["exit"]:
-            line = _menu_row(f" {cursor} Exit", inner)
-            if selected:
-                print(f"\033[7m{line}\033[0m")
-            else:
-                print(line)
+            line = _menu_row(f"  {cursor}  Exit", inner)
+            lines.append(f"\033[7m{line}\033[0m" if selected else line)
             continue
 
         if bool(row["running"]):
-            state_rendered = _colorize("RUNNING", "32")
+            state = _colorize("● running", "32")
         else:
-            state_rendered = _colorize("STOPPED", "31")
+            state = _colorize("○ stopped", "2")
 
         if row_type == "group":
-            arrow = "\u25be" if row["expanded"] else "\u25b8"
+            arrow = "▾" if row["expanded"] else "▸"
             n = len(list(row.get("children", [])))
-            display = _fit_text(f"{arrow} {row['name']} [{n}]", name_w)
+            raw = f"{arrow} {row['name']} [{n}]"
+            display = _colorize(_fit_text(raw, name_w), "1")
         elif row_type == "child":
-            display = _fit_text(f"  \u2514 {row['name']}", name_w)
+            display = _fit_text(f"  └ {row['name']}", name_w)
         else:
             display = _fit_text(str(row["name"]), name_w)
 
-        line = _menu_row(f" {cursor} {display.ljust(name_w)}  {state_rendered}", inner)
-        if selected:
-            print(f"\033[7m{line}\033[0m")
-        else:
-            print(line)
+        left = f"  {cursor} {_visible_ljust(display, name_w)}"
+        row_text = left + " " * gap + state + "  "
+        line = _menu_row(row_text, inner)
+        lines.append(f"\033[7m{line}\033[0m" if selected else line)
 
-    print(_menu_border(inner))
+    lines.append(_box_mid(inner))
 
-    selected = rows[idx]
-    if selected["exit"]:
-        footer = " Exit without attaching "
+    sel = rows[idx]
+    if sel["exit"]:
+        footer = "  Exit without attaching"
     else:
-        mapped = _compact_path(str(selected["mapped_dir"]))
-        row_type = selected.get("row_type", "leaf")
+        mapped = _compact_path(str(sel["mapped_dir"]))
+        row_type = sel.get("row_type", "leaf")
         if row_type == "group":
-            action = "collapse" if selected["expanded"] else "expand"
-        elif bool(selected["running"]):
+            action = "collapse" if sel["expanded"] else "expand"
+        elif bool(sel["running"]):
             action = "attach"
         else:
-            action = "start+attach"
-        idle = _session_idle_seconds(str(selected["name"])) if bool(selected["running"]) else None
-        idle_text = f"{idle}s" if idle is not None else "n/a"
-        new_hint = " | n: spawn another" if selected["mapped_dir"] else ""
-        footer = f" {selected['name']} | {action} | Idle: {idle_text} | {mapped}{new_hint} "
-    print(_menu_row(footer, inner))
-    print(_menu_border(inner))
+            action = "start + attach"
+        idle = _session_idle_seconds(str(sel["name"])) if bool(sel["running"]) else None
+        parts: list[str] = [f"  {sel['name']}", action]
+        if idle is not None:
+            parts.append(f"idle {idle}s")
+        parts.append(mapped)
+        if sel["mapped_dir"]:
+            parts.append("n: spawn another")
+        footer = "  ·  ".join(parts)
+
+    lines.append(_menu_row(_colorize(f" {footer} ", "2"), inner))
+    lines.append(_box_bot(inner))
+
+    sys.stdout.write("\n".join(lines) + "\n")
+    sys.stdout.flush()
 
 
 def _read_menu_key() -> str:
     ch = sys.stdin.read(1)
     if ch == "\x1b":
+        # Use a short timeout to distinguish bare Esc from an escape sequence.
+        # Falls back to always-ready when stdin is not a real fd (e.g. StringIO in tests).
+        try:
+            ready = select.select([sys.stdin], [], [], 0.075)[0]
+        except Exception:
+            ready = True
+        if not ready:
+            return "esc"
         nxt = sys.stdin.read(1)
         if nxt in {"[", "O"}:
             third = sys.stdin.read(1)
@@ -819,6 +832,8 @@ def _choose_attach_session_interactive() -> str | None:
     old = termios.tcgetattr(fd)
     try:
         tty.setcbreak(fd)
+        sys.stdout.write("\033[?25l")  # hide cursor
+        sys.stdout.flush()
         while True:
             _render_attach_menu(rows, idx)
             key = _read_menu_key()
@@ -829,7 +844,6 @@ def _choose_attach_session_interactive() -> str | None:
             elif key == "enter":
                 row = rows[idx]
                 if row["exit"]:
-                    print("\033[2J\033[H", end="")
                     return None
                 if row.get("row_type") == "group":
                     # Toggle expand/collapse and stay on this row
@@ -844,7 +858,6 @@ def _choose_attach_session_interactive() -> str | None:
                             idx = i
                             break
                 else:
-                    print("\033[2J\033[H", end="")
                     return str(row["name"])
             elif key == "right":
                 row = rows[idx]
@@ -904,9 +917,11 @@ def _choose_attach_session_interactive() -> str | None:
                         idx = i
                         break
             elif key in {"quit", "esc"}:
-                print("\033[2J\033[H", end="")
                 return None
     finally:
+        sys.stdout.write("\033[?25h")  # restore cursor
+        sys.stdout.write("\033[2J\033[H")
+        sys.stdout.flush()
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
 
 

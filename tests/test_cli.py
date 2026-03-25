@@ -465,20 +465,14 @@ def test_compact_path_shortens_long_path(monkeypatch) -> None:
 
 def test_menu_row_handles_ansi_without_border_shift() -> None:
     row = cli._menu_row("state \033[32mRUNNING\033[0m", 20)
-    assert row.startswith("|")
-    assert row.endswith("|")
+    assert row.startswith("│")
+    assert row.endswith("│")
     visible = cli.ANSI_RE.sub("", row)
     assert len(visible) == 22
 
 
-def test_attach_banner_includes_host_and_focus(monkeypatch) -> None:
-    monkeypatch.setattr(cli.socket, "gethostname", lambda: "studio.home")
-    monkeypatch.setattr(cli.config, "get_focus", lambda: "filter2")
-
-    banner = cli._attach_banner_text()
-
-    assert "Host: studio.home" in banner
-    assert "Focus: filter2" in banner
+def test_version_string_appears_in_version_constant() -> None:
+    assert cli._VERSION == "0.6.0"
 
 
 def test_read_menu_key_recognizes_csi_arrow_sequences(monkeypatch) -> None:
