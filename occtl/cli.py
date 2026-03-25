@@ -459,11 +459,12 @@ def _build_attach_menu_rows(expanded: set[str] | None = None) -> list[dict[str, 
                 }
             )
             if is_expanded:
-                for sess in instances:
+                for j, sess in enumerate(instances, 1):
                     rows.append(
                         {
                             "row_type": "child",
                             "name": sess["name"],
+                            "display_name": f"{mapping_name} {j}",
                             "mapping_name": mapping_name,
                             "mapped_dir": mapped_dir,
                             "running": True,
@@ -613,7 +614,7 @@ def _session_idle_seconds(name: str) -> int | None:
         return None
 
 
-_VERSION = "0.7.0"
+_VERSION = "0.8.0"
 
 # Visible width of the status indicator ("● running" / "○ stopped")
 _STATUS_W = 9
@@ -621,15 +622,15 @@ _STATUS_W = 9
 _RIGHT_MARGIN = 6
 
 
-def _render_attach_menu(rows: list[dict[str, object]], idx: int) -> None:
+def _render_attach_menu(
+    rows: list[dict[str, object]], idx: int, *, host: str = "", focus: str = ""
+) -> None:
     cols = shutil.get_terminal_size(fallback=(100, 30)).columns
     inner = max(40, cols - 2)  # full terminal width, minus the two border chars
     # Layout per row: "  {cursor} {name_w}  {status}{_RIGHT_MARGIN}"
     name_w = max(16, min(60, inner - 4 - 2 - _STATUS_W - _RIGHT_MARGIN))
     gap = max(2, inner - 4 - name_w - _STATUS_W - _RIGHT_MARGIN)
 
-    host = socket.gethostname()
-    focus = config.get_focus() or "none"
     now = datetime.now().strftime("%H:%M")
     info = f"  {host}  ·  {focus}  ·  {now}  ·  v{_VERSION}"
     hints = "  ↑↓/jk · Enter open · → expand · ← collapse · n new · r remap · q quit"
@@ -654,7 +655,8 @@ def _render_attach_menu(rows: list[dict[str, object]], idx: int) -> None:
         row_type = row.get("row_type", "leaf")
 
         if row["exit"]:
-            line = _menu_row(f"  {cursor}  Exit", inner)
+            lines.append(_box_mid(inner))
+            line = _menu_row(f"  {cursor} Exit", inner)
             lines.append(f"\033[7m{line}\033[0m" if selected else line)
             continue
 
@@ -669,7 +671,8 @@ def _render_attach_menu(rows: list[dict[str, object]], idx: int) -> None:
             raw = f"{arrow} {row['name']} [{n}]"
             display = _colorize(_fit_text(raw, name_w), "1")
         elif row_type == "child":
-            display = _fit_text(f"  └ {row['name']}", name_w)
+            label = str(row.get("display_name") or row["name"])
+            display = _fit_text(f"  └ {label}", name_w)
         else:
             display = _fit_text(str(row["name"]), name_w)
 
@@ -710,43 +713,40 @@ def _render_attach_menu(rows: list[dict[str, object]], idx: int) -> None:
     sys.stdout.flush()
 
 
-def _read_menu_key() -> str:
-    ch = sys.stdin.read(1)
-    if ch == "\x1b":
-        # Distinguish a bare Esc from an escape sequence (e.g. arrow keys → \x1b[A).
-        # sys.stdin.read(1) may buffer ahead, so check Python's buffer first — if bytes
-        # are already there we don't need to call select (and select would falsely report
-        # the fd as not-ready because the bytes are in Python's buffer, not the kernel's).
-        try:
-            has_buffered = hasattr(sys.stdin, "buffer") and bool(sys.stdin.buffer.peek(1))
-            ready = True if has_buffered else bool(select.select([sys.stdin], [], [], 0.075)[0])
-        except Exception:
-            ready = True  # StringIO in tests: assume sequence continues
-        if not ready:
+def _read_menu_key(fd: int) -> str:
+    # Use os.read on the raw fd to bypass Python's text/binary buffer layers.
+    # Python's TextIOWrapper + BufferedReader have separate internal buffers that
+    # make peek() and select() disagree, causing spurious 75ms timeouts on arrow keys.
+    try:
+        ch = os.read(fd, 1)
+    except OSError:
+        return "other"
+    if ch == b"\x1b":
+        # Check the kernel buffer directly — no Python buffer confusion.
+        r, _, _ = select.select([fd], [], [], 0.05)
+        if not r:
             return "esc"
-        nxt = sys.stdin.read(1)
-        if nxt in {"[", "O"}:
-            third = sys.stdin.read(1)
-            if third == "A":
-                return "up"
-            if third == "B":
-                return "down"
-            if third == "C":
-                return "right"
-            if third == "D":
-                return "left"
+        rest = os.read(fd, 2)
+        if rest in {b"[A", b"OA"}:
+            return "up"
+        if rest in {b"[B", b"OB"}:
+            return "down"
+        if rest in {b"[C", b"OC"}:
+            return "right"
+        if rest in {b"[D", b"OD"}:
+            return "left"
         return "esc"
-    if ch in {"k", "K"}:
+    if ch in {b"k", b"K"}:
         return "up"
-    if ch in {"j", "J"}:
+    if ch in {b"j", b"J"}:
         return "down"
-    if ch in {"\r", "\n"}:
+    if ch in {b"\r", b"\n"}:
         return "enter"
-    if ch in {"q", "Q"}:
+    if ch in {b"q", b"Q"}:
         return "quit"
-    if ch in {"r", "R"}:
+    if ch in {b"r", b"R"}:
         return "remap"
-    if ch in {"n", "N"}:
+    if ch in {b"n", b"N"}:
         return "new"
     return "other"
 
@@ -833,6 +833,16 @@ def _choose_attach_session_interactive() -> str | None:
         print("attach requires a session name in non-interactive mode")
         return None
 
+    # Cache expensive per-render values — host never changes, focus only changes on attach.
+    # Refresh both whenever rows are rebuilt (expand/collapse/new).
+    host = socket.gethostname()
+    focus = config.get_focus() or "none"
+
+    def _rebuild_rows() -> list[dict[str, object]]:
+        nonlocal focus
+        focus = config.get_focus() or "none"
+        return _build_attach_menu_rows(expanded)
+
     idx = 0
     fd = sys.stdin.fileno()
     old = termios.tcgetattr(fd)
@@ -841,8 +851,8 @@ def _choose_attach_session_interactive() -> str | None:
         sys.stdout.write("\033[?25l")  # hide cursor
         sys.stdout.flush()
         while True:
-            _render_attach_menu(rows, idx)
-            key = _read_menu_key()
+            _render_attach_menu(rows, idx, host=host, focus=focus)
+            key = _read_menu_key(fd)
             if key == "up":
                 idx = (idx - 1) % len(rows)
             elif key == "down":
@@ -858,7 +868,7 @@ def _choose_attach_session_interactive() -> str | None:
                         expanded.discard(mapping_name)
                     else:
                         expanded.add(mapping_name)
-                    rows = _build_attach_menu_rows(expanded)
+                    rows = _rebuild_rows()
                     for i, r in enumerate(rows):
                         if r.get("row_type") == "group" and r["mapping_name"] == mapping_name:
                             idx = i
@@ -870,7 +880,7 @@ def _choose_attach_session_interactive() -> str | None:
                 if row.get("row_type") == "group" and not row["expanded"]:
                     mname = str(row["mapping_name"])
                     expanded.add(mname)
-                    rows = _build_attach_menu_rows(expanded)
+                    rows = _rebuild_rows()
                     for i, r in enumerate(rows):
                         if r.get("row_type") == "group" and r["mapping_name"] == mname:
                             idx = i
@@ -880,7 +890,7 @@ def _choose_attach_session_interactive() -> str | None:
                 mapping_name = str(row.get("mapping_name", ""))
                 if mapping_name in expanded:
                     expanded.discard(mapping_name)
-                    rows = _build_attach_menu_rows(expanded)
+                    rows = _rebuild_rows()
                     for i, r in enumerate(rows):
                         if r.get("row_type") == "group" and r["mapping_name"] == mapping_name:
                             idx = i
@@ -893,7 +903,7 @@ def _choose_attach_session_interactive() -> str | None:
                 new_path = _prompt_for_path(mapping_name, current_dir, fd, old)
                 if new_path:
                     config.set_mapping(mapping_name, new_path)
-                    rows = _build_attach_menu_rows(expanded)
+                    rows = _rebuild_rows()
                     for i, r in enumerate(rows):
                         if r["mapping_name"] == mapping_name and r.get("row_type") != "child":
                             idx = i
@@ -913,11 +923,11 @@ def _choose_attach_session_interactive() -> str | None:
                     tmux.new_window(new_name, "logs", mapped_dir)
                     tmux.new_window(new_name, "shell", mapped_dir)
                 except tmux.TmuxError:
-                    rows = _build_attach_menu_rows(expanded)
+                    rows = _rebuild_rows()
                     continue
                 # Auto-expand the group and land on the new child row
                 expanded.add(mapping_name)
-                rows = _build_attach_menu_rows(expanded)
+                rows = _rebuild_rows()
                 for i, r in enumerate(rows):
                     if r["name"] == new_name:
                         idx = i

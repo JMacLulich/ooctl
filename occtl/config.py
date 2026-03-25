@@ -7,8 +7,13 @@ CONFIG_DIR = Path.home() / ".config" / "occtl"
 MAPPINGS_FILE = CONFIG_DIR / "mappings.toml"
 STATE_FILE = CONFIG_DIR / "state.json"
 
+_ensured_dir: Path | None = None
+
 
 def ensure_config_dir() -> None:
+    global _ensured_dir
+    if _ensured_dir == CONFIG_DIR:
+        return
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     if not MAPPINGS_FILE.exists():
         MAPPINGS_FILE.write_text("[map]\n", encoding="utf-8")
@@ -26,6 +31,7 @@ def ensure_config_dir() -> None:
             ),
             encoding="utf-8",
         )
+    _ensured_dir = CONFIG_DIR
 
 
 def load_state() -> dict:

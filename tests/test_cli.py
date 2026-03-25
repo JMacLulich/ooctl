@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import argparse
-import io
+import os
 from pathlib import Path
 
 import pytest
@@ -472,21 +472,25 @@ def test_menu_row_handles_ansi_without_border_shift() -> None:
 
 
 def test_version_string_appears_in_version_constant() -> None:
-    assert cli._VERSION == "0.7.0"
+    assert cli._VERSION == "0.8.0"
 
 
-def test_read_menu_key_recognizes_csi_arrow_sequences(monkeypatch) -> None:
-    monkeypatch.setattr(cli.sys, "stdin", io.StringIO("\x1b[A\x1b[B"))
+def test_read_menu_key_recognizes_csi_arrow_sequences() -> None:
+    r, w = os.pipe()
+    os.write(w, b"\x1b[A\x1b[B")
+    os.close(w)
+    assert cli._read_menu_key(r) == "up"
+    assert cli._read_menu_key(r) == "down"
+    os.close(r)
 
-    assert cli._read_menu_key() == "up"
-    assert cli._read_menu_key() == "down"
 
-
-def test_read_menu_key_recognizes_ss3_arrow_sequences(monkeypatch) -> None:
-    monkeypatch.setattr(cli.sys, "stdin", io.StringIO("\x1bOA\x1bOB"))
-
-    assert cli._read_menu_key() == "up"
-    assert cli._read_menu_key() == "down"
+def test_read_menu_key_recognizes_ss3_arrow_sequences() -> None:
+    r, w = os.pipe()
+    os.write(w, b"\x1bOA\x1bOB")
+    os.close(w)
+    assert cli._read_menu_key(r) == "up"
+    assert cli._read_menu_key(r) == "down"
+    os.close(r)
 
 
 def test_match_wait_pattern_detects_prompt() -> None:
