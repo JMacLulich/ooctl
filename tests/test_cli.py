@@ -643,7 +643,7 @@ def _make_session(name: str, path: str, attached: bool = False, windows: int = 1
 
 
 def test_build_attach_menu_rows_groups_sessions_by_mapped_path(monkeypatch, tmp_path: Path) -> None:
-    """Sessions sharing a mapped path each get their own row under that mapping."""
+    """Multiple sessions sharing a mapped path produce a single collapsed group row."""
     proj = str(tmp_path / "myproject")
     monkeypatch.setattr(cli.config, "load_mappings", lambda: {"myproject": proj})
     monkeypatch.setattr(cli.config, "get_recent_attaches", lambda: [])
@@ -660,12 +660,42 @@ def test_build_attach_menu_rows_groups_sessions_by_mapped_path(monkeypatch, tmp_
     rows = cli._build_attach_menu_rows()
     data = [r for r in rows if not r["exit"]]
 
-    # Two running rows, one per session, both under the same mapping
-    assert len(data) == 2
-    names = {r["name"] for r in data}
-    assert names == {"myproject", "myproject-worker"}
-    assert all(r["mapping_name"] == "myproject" for r in data)
-    assert all(r["running"] is True for r in data)
+    # One group row (collapsed) with 2 children
+    assert len(data) == 1
+    assert data[0]["row_type"] == "group"
+    assert data[0]["name"] == "myproject"
+    assert data[0]["expanded"] is False
+    children = data[0]["children"]
+    assert len(children) == 2
+    assert {c["name"] for c in children} == {"myproject", "myproject-worker"}
+
+
+def test_build_attach_menu_rows_group_expands_to_child_rows(monkeypatch, tmp_path: Path) -> None:
+    """Passing the mapping name in expanded set adds child rows after the group."""
+    proj = str(tmp_path / "myproject")
+    monkeypatch.setattr(cli.config, "load_mappings", lambda: {"myproject": proj})
+    monkeypatch.setattr(cli.config, "get_recent_attaches", lambda: [])
+    monkeypatch.setattr(cli.config, "get_focus", lambda: "")
+    monkeypatch.setattr(
+        cli.tmux,
+        "list_sessions_with_paths",
+        lambda: [
+            _make_session("myproject", proj),
+            _make_session("myproject-worker", proj),
+        ],
+    )
+
+    rows = cli._build_attach_menu_rows(expanded={"myproject"})
+    data = [r for r in rows if not r["exit"]]
+
+    # Group row + 2 child rows
+    assert len(data) == 3
+    assert data[0]["row_type"] == "group"
+    assert data[0]["expanded"] is True
+    assert data[1]["row_type"] == "child"
+    assert data[2]["row_type"] == "child"
+    child_names = {data[1]["name"], data[2]["name"]}
+    assert child_names == {"myproject", "myproject-worker"}
 
 
 def test_build_attach_menu_rows_single_session_one_row(monkeypatch, tmp_path: Path) -> None:

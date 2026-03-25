@@ -392,7 +392,17 @@ def cmd_attach(args: argparse.Namespace) -> int:
     return 0
 
 
-def _build_attach_menu_rows() -> list[dict[str, object]]:
+def _build_attach_menu_rows(expanded: set[str] | None = None) -> list[dict[str, object]]:
+    """Build the list of visible menu rows.
+
+    Mappings with multiple running instances are rendered as a collapsible group:
+    - row_type "group"  — parent row showing the mapping name and instance count
+    - row_type "child"  — indented child rows (only emitted when the group is expanded)
+    Mappings with 0 or 1 instance and unclaimed sessions are row_type "leaf".
+    """
+    if expanded is None:
+        expanded = set()
+
     mappings = config.load_mappings()
     all_sessions = tmux.list_sessions_with_paths()
     recent = config.get_recent_attaches()
@@ -405,7 +415,6 @@ def _build_attach_menu_rows() -> list[dict[str, object]]:
         except Exception:
             return p
 
-    # Sessions claimed by a mapping: name match OR path match
     def _instances_for_mapping(mapping_name: str, mapped_dir: str) -> list[dict]:
         canonical = _resolve_path(mapped_dir) if mapped_dir else ""
         return [
@@ -424,31 +433,64 @@ def _build_attach_menu_rows() -> list[dict[str, object]]:
 
     rows: list[dict[str, object]] = []
 
-    # Expand each mapping into one row per running instance (flat list, grouped by mapping).
-    # If no instances are running, emit a single stopped row for the mapping key.
     for mapping_name in sorted(
         mappings.keys(),
         key=lambda n: (recent_rank.get(n, len(recent_rank) + 1), n),
     ):
         mapped_dir = mappings[mapping_name]
         instances = mapping_instances[mapping_name]
-        if instances:
-            for sess in instances:
-                rows.append(
-                    {
-                        "name": sess["name"],
-                        "mapping_name": mapping_name,
-                        "mapped_dir": mapped_dir,
-                        "running": True,
-                        "attached": sess["attached"],
-                        "windows": sess["windows"],
-                        "focused": sess["name"] == focus,
-                        "exit": False,
-                    }
-                )
+
+        if len(instances) > 1:
+            is_expanded = mapping_name in expanded
+            rows.append(
+                {
+                    "row_type": "group",
+                    "name": mapping_name,
+                    "mapping_name": mapping_name,
+                    "mapped_dir": mapped_dir,
+                    "running": True,
+                    "attached": any(s["attached"] for s in instances),
+                    "windows": sum(s["windows"] for s in instances),
+                    "focused": any(s["name"] == focus for s in instances),
+                    "expanded": is_expanded,
+                    "children": instances,
+                    "exit": False,
+                }
+            )
+            if is_expanded:
+                for sess in instances:
+                    rows.append(
+                        {
+                            "row_type": "child",
+                            "name": sess["name"],
+                            "mapping_name": mapping_name,
+                            "mapped_dir": mapped_dir,
+                            "running": True,
+                            "attached": sess["attached"],
+                            "windows": sess["windows"],
+                            "focused": sess["name"] == focus,
+                            "exit": False,
+                        }
+                    )
+        elif len(instances) == 1:
+            sess = instances[0]
+            rows.append(
+                {
+                    "row_type": "leaf",
+                    "name": sess["name"],
+                    "mapping_name": mapping_name,
+                    "mapped_dir": mapped_dir,
+                    "running": True,
+                    "attached": sess["attached"],
+                    "windows": sess["windows"],
+                    "focused": sess["name"] == focus,
+                    "exit": False,
+                }
+            )
         else:
             rows.append(
                 {
+                    "row_type": "leaf",
                     "name": mapping_name,
                     "mapping_name": mapping_name,
                     "mapped_dir": mapped_dir,
@@ -460,11 +502,11 @@ def _build_attach_menu_rows() -> list[dict[str, object]]:
                 }
             )
 
-    # Unclaimed running sessions (no matching mapping by name or path)
     for s in all_sessions:
         if s["name"] not in claimed_names:
             rows.append(
                 {
+                    "row_type": "leaf",
                     "name": s["name"],
                     "mapping_name": s["name"],
                     "mapped_dir": "",
@@ -478,6 +520,7 @@ def _build_attach_menu_rows() -> list[dict[str, object]]:
 
     rows.append(
         {
+            "row_type": "exit",
             "name": "Exit",
             "mapping_name": "",
             "mapped_dir": "",
@@ -552,7 +595,7 @@ def _session_idle_seconds(name: str) -> int | None:
         return None
 
 
-_VERSION = "0.4.0"
+_VERSION = "0.5.0"
 
 
 def _attach_banner_text() -> str:
@@ -596,7 +639,7 @@ def _render_attach_menu(rows: list[dict[str, object]], idx: int) -> None:
     print(_menu_border(inner))
     print(
         _menu_row(
-            " Up/Down/j/k: move   Enter: attach   n: new instance   r: remap   q/Esc: exit ",
+            " Up/Down/j/k: move   Enter: expand/attach   n: new   r: remap   q/Esc: exit ",
             inner,
         )
     )
@@ -607,6 +650,8 @@ def _render_attach_menu(rows: list[dict[str, object]], idx: int) -> None:
     for i, row in enumerate(rows):
         selected = i == idx
         cursor = ">" if selected else " "
+        row_type = row.get("row_type", "leaf")
+
         if row["exit"]:
             line = _menu_row(f" {cursor} Exit", inner)
             if selected:
@@ -619,8 +664,17 @@ def _render_attach_menu(rows: list[dict[str, object]], idx: int) -> None:
             state_rendered = _colorize("RUNNING", "32")
         else:
             state_rendered = _colorize("STOPPED", "31")
-        name = _fit_text(str(row["name"]), name_w)
-        line = _menu_row(f" {cursor} {name.ljust(name_w)}  {state_rendered}", inner)
+
+        if row_type == "group":
+            arrow = "\u25be" if row["expanded"] else "\u25b8"
+            n = len(list(row.get("children", [])))
+            display = _fit_text(f"{arrow} {row['name']} [{n}]", name_w)
+        elif row_type == "child":
+            display = _fit_text(f"  \u2514 {row['name']}", name_w)
+        else:
+            display = _fit_text(str(row["name"]), name_w)
+
+        line = _menu_row(f" {cursor} {display.ljust(name_w)}  {state_rendered}", inner)
         if selected:
             print(f"\033[7m{line}\033[0m")
         else:
@@ -633,14 +687,17 @@ def _render_attach_menu(rows: list[dict[str, object]], idx: int) -> None:
         footer = " Exit without attaching "
     else:
         mapped = _compact_path(str(selected["mapped_dir"]))
-        action = "attach" if bool(selected["running"]) else "start+attach"
+        row_type = selected.get("row_type", "leaf")
+        if row_type == "group":
+            action = "collapse" if selected["expanded"] else "expand"
+        elif bool(selected["running"]):
+            action = "attach"
+        else:
+            action = "start+attach"
         idle = _session_idle_seconds(str(selected["name"])) if bool(selected["running"]) else None
         idle_text = f"{idle}s" if idle is not None else "n/a"
         new_hint = " | n: spawn another" if selected["mapped_dir"] else ""
-        footer = (
-            f" Session: {selected['name']} | Action: {action} | Idle: {idle_text}"
-            f" | Project: {mapped}{new_hint} "
-        )
+        footer = f" {selected['name']} | {action} | Idle: {idle_text} | {mapped}{new_hint} "
     print(_menu_row(footer, inner))
     print(_menu_border(inner))
 
@@ -743,7 +800,8 @@ def _prompt_for_path(session: str, current: str, fd: int, old_termios: list) -> 
 
 
 def _choose_attach_session_interactive() -> str | None:
-    rows = _build_attach_menu_rows()
+    expanded: set[str] = set()
+    rows = _build_attach_menu_rows(expanded)
     if not rows:
         print("no mapped or running sessions found")
         return None
@@ -765,10 +823,25 @@ def _choose_attach_session_interactive() -> str | None:
             elif key == "down":
                 idx = (idx + 1) % len(rows)
             elif key == "enter":
-                print("\033[2J\033[H", end="")
-                if rows[idx]["exit"]:
+                row = rows[idx]
+                if row["exit"]:
+                    print("\033[2J\033[H", end="")
                     return None
-                return str(rows[idx]["name"])
+                if row.get("row_type") == "group":
+                    # Toggle expand/collapse and stay on this row
+                    mapping_name = str(row["mapping_name"])
+                    if mapping_name in expanded:
+                        expanded.discard(mapping_name)
+                    else:
+                        expanded.add(mapping_name)
+                    rows = _build_attach_menu_rows(expanded)
+                    for i, r in enumerate(rows):
+                        if r.get("row_type") == "group" and r["mapping_name"] == mapping_name:
+                            idx = i
+                            break
+                else:
+                    print("\033[2J\033[H", end="")
+                    return str(row["name"])
             elif key == "remap":
                 if rows[idx]["exit"]:
                     continue
@@ -777,9 +850,9 @@ def _choose_attach_session_interactive() -> str | None:
                 new_path = _prompt_for_path(mapping_name, current_dir, fd, old)
                 if new_path:
                     config.set_mapping(mapping_name, new_path)
-                    rows = _build_attach_menu_rows()
+                    rows = _build_attach_menu_rows(expanded)
                     for i, r in enumerate(rows):
-                        if r["name"] == rows[idx]["name"]:
+                        if r["mapping_name"] == mapping_name and r.get("row_type") != "child":
                             idx = i
                             break
             elif key == "new":
@@ -789,17 +862,19 @@ def _choose_attach_session_interactive() -> str | None:
                 mapped_dir = str(row["mapped_dir"])
                 if not Path(mapped_dir).exists():
                     continue
-                new_name = _next_session_name(str(row["mapping_name"]))
+                mapping_name = str(row["mapping_name"])
+                new_name = _next_session_name(mapping_name)
                 try:
                     tmux.new_session(new_name, mapped_dir)
                     tmux.send_keys(f"{new_name}:main", ["opencode", "Enter"])
                     tmux.new_window(new_name, "logs", mapped_dir)
                     tmux.new_window(new_name, "shell", mapped_dir)
                 except tmux.TmuxError:
-                    rows = _build_attach_menu_rows()
+                    rows = _build_attach_menu_rows(expanded)
                     continue
-                # Refresh so the new row appears; land on it so user can see it or press Enter
-                rows = _build_attach_menu_rows()
+                # Auto-expand the group and land on the new child row
+                expanded.add(mapping_name)
+                rows = _build_attach_menu_rows(expanded)
                 for i, r in enumerate(rows):
                     if r["name"] == new_name:
                         idx = i
