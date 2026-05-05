@@ -208,10 +208,17 @@ def _ensure_clipboard_for_attach() -> list[str]:
     # "scroll" keeps mouse on for scrolling while still wiring OSC52/copy bindings.
     # "tmux" is also acceptable (user explicitly chose full tmux mouse). Both satisfy attach.
     # "terminal" disables mouse entirely (breaks scrolling) — upgrade it on every attach.
+    in_ssh = _in_ssh_session()
+    stored_mode = data.get("selected_mode", "")
+    # Re-setup if SSH context changed: SSH needs osc52; local needs native.
+    mode_mismatch = (in_ssh and stored_mode == "native") or (
+        not in_ssh and stored_mode == "osc52"
+    )
     needs_setup = (
         not data.get("configured_on_disk")
         or data.get("loaded_in_tmux") is False
         or data.get("mouse_mode") not in {"tmux"}
+        or mode_mismatch
     )
     if not needs_setup:
         return []
