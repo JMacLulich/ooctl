@@ -9,22 +9,77 @@ RUN_CMDS_DIR="$ROOT/commands"
 VENV_DIR="$ROOT/.venv"
 VENV_BIN="$VENV_DIR/bin"
 RUN_PYTHON="$VENV_BIN/python"
+BASE_PYTHON=""
 
-ensure_venv() {
-  if [[ -x "$RUN_PYTHON" && -d "$VENV_DIR/lib" ]]; then
+python_is_supported() {
+  "$1" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)' \
+    >/dev/null 2>&1
+}
+
+find_supported_python() {
+  local candidate
+  for candidate in python3.13 python3.12 python3.11 python3.10 python3; do
+    if command -v "$candidate" >/dev/null 2>&1 && python_is_supported "$candidate"; then
+      command -v "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+ensure_supported_python() {
+  if BASE_PYTHON="$(find_supported_python)"; then
     return 0
   fi
 
-  if ! command -v python3 >/dev/null 2>&1; then
-    echo "python3 is required to create the local run environment."
-    exit 1
+  if command -v brew >/dev/null 2>&1; then
+    echo "Python 3.10+ not found; installing Python with Homebrew..."
+    brew install python
+    if BASE_PYTHON="$(find_supported_python)"; then
+      return 0
+    fi
+  fi
+
+  echo "Python 3.10 or newer is required."
+  exit 1
+}
+
+venv_target_path() {
+  local venv_target="$VENV_DIR"
+  if [[ -L "$VENV_DIR" ]]; then
+    local link_target
+    link_target="$(readlink "$VENV_DIR")"
+    if [[ "$link_target" = /* ]]; then
+      venv_target="$link_target"
+    else
+      venv_target="$(cd "$(dirname "$VENV_DIR")" && pwd)/$link_target"
+    fi
+  fi
+  printf '%s\n' "$venv_target"
+}
+
+ensure_venv() {
+  local venv_target
+  venv_target="$(venv_target_path)"
+
+  if [[ -x "$RUN_PYTHON" && -d "$VENV_DIR/lib" ]] && python_is_supported "$RUN_PYTHON"; then
+    return 0
+  fi
+
+  if [[ -x "$RUN_PYTHON" && -d "$VENV_DIR/lib" ]]; then
+    echo "Replacing incompatible local environment: $VENV_DIR"
+    rm -rf "$venv_target"
   fi
 
   echo "Creating local environment: $VENV_DIR"
-  python3 -m venv "$VENV_DIR"
+  if [[ -L "$VENV_DIR" ]]; then
+    mkdir -p "$(dirname "$venv_target")"
+  fi
+  "$BASE_PYTHON" -m venv "$venv_target"
 }
 
 prepare_env() {
+  ensure_supported_python
   ensure_venv
   export PATH="$VENV_BIN:$PATH"
   export RUN_PYTHON

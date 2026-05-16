@@ -172,6 +172,7 @@ def _render_include(
     *,
     mode: str,
     bind_keys: str,
+    mouse_mode: str,
     helper_path: Path | None,
     native_cmd: list[str] | None,
 ) -> str:
@@ -187,34 +188,40 @@ def _render_include(
         raise ClipboardError(f"unsupported clipboard mode: {mode}")
 
     key = "Y" if bind_keys == "minimal" else "y"
+    # "tmux" and "scroll" both enable tmux mouse; only "terminal" disables it.
+    # "scroll" keeps mouse on for scrolling but skips the MouseDrag bindings so
+    # the terminal can handle direct selection/copy (e.g. Shift-drag in iTerm2).
+    tmux_mouse = "on" if mouse_mode in {"tmux", "scroll"} else "off"
     lines = [
         "# Managed by occtl. Re-run `oc clipboard setup` to update.",
         "set -s set-clipboard on",
         "set -g allow-passthrough on",
         "set -as terminal-features ',xterm*:clipboard'",
-        'set -g mouse "on"',
+        f'set -g mouse "{tmux_mouse}"',
         'set -g @oc_clipboard_loaded "1"',
         f'set -g @oc_clipboard_mode "{mode}"',
+        f'set -g @oc_clipboard_mouse_mode "{mouse_mode}"',
         f'set -g @oc_clipboard_pipe "{pipe_cmd}"',
     ]
 
     escaped = pipe_cmd.replace('"', '\\"')
-    lines.extend(
-        [
-            (
-                'bind-key -n MouseDrag1Pane if-shell -F "#{mouse_any_flag}" '
-                '"send-keys -M" "copy-mode -M"'
-            ),
-            (
-                f"bind-key -T copy-mode-vi MouseDragEnd1Pane "
-                f'send-keys -X copy-pipe-and-cancel "{escaped}"'
-            ),
-            (
-                f"bind-key -T copy-mode MouseDragEnd1Pane "
-                f'send-keys -X copy-pipe-and-cancel "{escaped}"'
-            ),
-        ]
-    )
+    if mouse_mode == "tmux":
+        lines.extend(
+            [
+                (
+                    'bind-key -n MouseDrag1Pane if-shell -F "#{mouse_any_flag}" '
+                    '"send-keys -M" "copy-mode -M"'
+                ),
+                (
+                    f"bind-key -T copy-mode-vi MouseDragEnd1Pane "
+                    f'send-keys -X copy-pipe-and-cancel "{escaped}"'
+                ),
+                (
+                    f"bind-key -T copy-mode MouseDragEnd1Pane "
+                    f'send-keys -X copy-pipe-and-cancel "{escaped}"'
+                ),
+            ]
+        )
 
     if bind_keys != "none":
         lines.extend(
@@ -392,10 +399,13 @@ def setup(
     reload_tmux: bool,
     bind_keys: str,
     follow_symlink: bool,
+    mouse_mode: str = "tmux",
 ) -> dict:
     with _operation_lock():
         if bind_keys not in {"minimal", "copy-mode-y", "none"}:
             raise ClipboardError(f"unsupported bind mode: {bind_keys}")
+        if mouse_mode not in {"terminal", "tmux", "scroll"}:
+            raise ClipboardError(f"unsupported mouse mode: {mouse_mode}")
 
         selected_mode, reasons = _resolve_mode(mode)
         native_cmd = _detect_native_clipboard_cmd() if selected_mode == "native" else None
@@ -410,6 +420,7 @@ def setup(
         include_text = _render_include(
             mode=selected_mode,
             bind_keys=bind_keys,
+            mouse_mode=mouse_mode,
             helper_path=helper_path,
             native_cmd=native_cmd,
         )
@@ -418,6 +429,7 @@ def setup(
         if print_snippet:
             return {
                 "mode": selected_mode,
+                "mouse_mode": mouse_mode,
                 "snippet": snippet,
                 "include_text": include_text,
                 "reasons": reasons,
@@ -431,6 +443,7 @@ def setup(
         if dry_run:
             return {
                 "mode": selected_mode,
+                "mouse_mode": mouse_mode,
                 "snippet": snippet,
                 "include_text": include_text,
                 "reasons": reasons,
@@ -464,6 +477,7 @@ def setup(
             "schema_version": 1,
             "mode": selected_mode,
             "bind_keys": bind_keys,
+            "mouse_mode": mouse_mode,
             "tmux_conf": str(edit_conf),
             "include_file": str(include_path),
             "helper_file": str(helper_path) if helper_path else "",
@@ -480,6 +494,7 @@ def setup(
 
         return {
             "mode": selected_mode,
+            "mouse_mode": mouse_mode,
             "tmux_conf": str(edit_conf),
             "include_file": str(include_path),
             "helper_file": str(helper_path) if helper_path else "",
@@ -556,6 +571,7 @@ def status(*, tmux_socket: str | None) -> dict:
         "configured_on_disk": configured_on_disk,
         "loaded_in_tmux": loaded_in_tmux,
         "selected_mode": state.get("mode") or "",
+        "mouse_mode": state.get("mouse_mode") or "",
         "loaded_mode": loaded_mode,
         "tmux_socket_used": tmux_socket_used,
         "tmux_socket_candidates": tmux_socket_candidates,

@@ -95,6 +95,52 @@ def list_sessions_with_paths() -> list[dict]:
     return rows
 
 
+def list_window_details() -> dict[str, dict[str, object]]:
+    try:
+        out = run(
+            [
+                "tmux",
+                "list-windows",
+                "-a",
+                "-F",
+                "#{session_name}\t#{window_name}\t#{window_active}\t#{pane_current_command}",
+            ]
+        )
+    except TmuxError:
+        return {}
+
+    details: dict[str, dict[str, object]] = {}
+    for line in out.splitlines():
+        parts = line.split("\t", 3)
+        if len(parts) < 4:
+            continue
+        session, window, active, command = parts
+        row = details.setdefault(
+            session,
+            {
+                "active_window": "",
+                "active_command": "",
+                "main_command": "",
+                "window_list": [],
+            },
+        )
+        windows = row.setdefault("window_list", [])
+        if isinstance(windows, list):
+            windows.append(
+                {
+                    "name": window,
+                    "active": active == "1",
+                    "command": command,
+                }
+            )
+        if window == "main":
+            row["main_command"] = command
+        if active == "1":
+            row["active_window"] = window
+            row["active_command"] = command
+    return details
+
+
 def new_session(name: str, workdir: str) -> None:
     run(["tmux", "new-session", "-d", "-s", name, "-n", "main", "-c", workdir])
 
@@ -105,6 +151,11 @@ def new_window(name: str, window: str, workdir: str) -> None:
 
 def send_keys(target: str, keys: list[str]) -> None:
     run(["tmux", "send-keys", "-t", target, *keys])
+
+
+def set_session_environment(session: str, values: dict[str, str]) -> None:
+    for key, value in values.items():
+        run(["tmux", "set-environment", "-t", session, key, value])
 
 
 def _ensure_attach_nofile_limit(minimum: int = 1024) -> None:
@@ -143,6 +194,10 @@ def attach(name: str, control_mode: bool = False) -> None:
 
 def kill_session(name: str) -> None:
     run(["tmux", "kill-session", "-t", name])
+
+
+def kill_window(target: str) -> None:
+    run(["tmux", "kill-window", "-t", target])
 
 
 def pane_last_activity(session: str, window: str = "main") -> int:

@@ -38,11 +38,61 @@ def test_setup_dry_run_keeps_tmux_conf_unchanged(tmp_path: Path, monkeypatch) ->
     assert result["mode"] == "osc52"
     assert result["changes"]["tmux_conf_changed"] is True
     assert clipboard.MARKER_BEGIN in result["snippet"]
+    assert result["mouse_mode"] == "tmux"
+    assert 'set -g mouse "on"' in result["include_text"]
+    assert "MouseDrag1Pane" in result["include_text"]
+    assert "MouseDragEnd1Pane" in result["include_text"]
+    assert '@oc_clipboard_mode "osc52"' in result["include_text"]
+    assert '@oc_clipboard_mouse_mode "tmux"' in result["include_text"]
+    assert tmux_conf.read_text(encoding="utf-8") == "set -g mouse on\n"
+
+
+def test_setup_tmux_mouse_mode_captures_drag_release(tmp_path: Path, monkeypatch) -> None:
+    _set_config_paths(tmp_path, monkeypatch)
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(clipboard.Path, "home", lambda: home)
+
+    result = clipboard.setup(
+        mode="osc52",
+        tmux_conf=str(home / ".tmux.conf"),
+        tmux_socket=None,
+        dry_run=True,
+        print_snippet=False,
+        reload_tmux=False,
+        bind_keys="minimal",
+        follow_symlink=False,
+        mouse_mode="tmux",
+    )
+
+    assert result["mouse_mode"] == "tmux"
     assert 'set -g mouse "on"' in result["include_text"]
     assert 'bind-key -n MouseDrag1Pane if-shell -F "#{mouse_any_flag}"' in result["include_text"]
     assert "bind-key -T copy-mode-vi MouseDragEnd1Pane" in result["include_text"]
-    assert '@oc_clipboard_mode "osc52"' in result["include_text"]
-    assert tmux_conf.read_text(encoding="utf-8") == "set -g mouse on\n"
+
+
+def test_setup_terminal_mouse_mode_disables_tmux_mouse(tmp_path: Path, monkeypatch) -> None:
+    _set_config_paths(tmp_path, monkeypatch)
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(clipboard.Path, "home", lambda: home)
+
+    result = clipboard.setup(
+        mode="osc52",
+        tmux_conf=str(home / ".tmux.conf"),
+        tmux_socket=None,
+        dry_run=True,
+        print_snippet=False,
+        reload_tmux=False,
+        bind_keys="minimal",
+        follow_symlink=False,
+        mouse_mode="terminal",
+    )
+
+    assert result["mouse_mode"] == "terminal"
+    assert 'set -g mouse "off"' in result["include_text"]
+    assert "MouseDrag1Pane" not in result["include_text"]
+    assert "MouseDragEnd1Pane" not in result["include_text"]
 
 
 def test_setup_is_idempotent_for_tmux_source_block(tmp_path: Path, monkeypatch) -> None:

@@ -23,10 +23,13 @@ append_line_if_missing() {
 install_launcher() {
   local target_dir="${HOME}/bin"
   local target_path="$target_dir/oc"
+  local path_line='export PATH="$HOME/bin:$PATH"'
 
   mkdir -p "$target_dir"
   ln -sf "$PROJECT_BIN" "$target_path"
   echo "Installed launcher: $target_path"
+  append_line_if_missing "${HOME}/.bashrc" "$path_line"
+  append_line_if_missing "${HOME}/.zshrc" "$path_line"
 }
 
 ensure_tmux() {
@@ -96,7 +99,11 @@ esac
 
 ensure_tmux
 
-"$PYTHON_BIN" -m pip install -e .[dev]
+echo "Bootstrapping packaging tools in ${RUN_VENV_DIR:-local environment}..."
+"$PYTHON_BIN" -m pip install --upgrade pip setuptools wheel
+
+echo "Installing occtl into ${RUN_VENV_DIR:-local environment}..."
+"$PYTHON_BIN" -m pip install --ignore-installed -e '.[dev]' --no-build-isolation
 echo "Installed occtl in ${RUN_VENV_DIR:-local environment}."
 
 install_launcher

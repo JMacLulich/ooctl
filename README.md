@@ -86,10 +86,63 @@ oc attach infra          # interactive attach (best from Termius)
 oc kill infra            # terminate a session (or: oc kill for focused)
 ```
 
+### Link cross-rig mailbox to tmux
+
+For projects using the `.rig-mailbox` protocol, use the normal session TUI:
+
+```bash
+oc attach
+```
+
+The TUI shows mailbox roles beside linked sessions, e.g. `[Rig A]` and
+`[Rig B]`. Press `m` to enter mailbox mode, then select two running sessions
+from the same workspace. If that workspace does not have `.rig-mailbox` yet,
+`oc attach` creates it first, then links the sessions.
+
+If a mapped project has exactly two running tmux sessions, `oc attach`
+auto-creates `.rig-mailbox` when missing and auto-links them as Rig A/Rig B
+when the TUI refreshes. This covers the common case where you create two
+`zoom-mvps` or `cash-claw` sessions and want them tied together without
+remembering any setup commands.
+
+The standalone wizard also exists:
+
+```bash
+oc mailbox
+```
+
+For scripted setup, `oc` can create the project mailbox if needed and write the
+stable tmux targets into `.rig-mailbox/rigs.toml`:
+
+```bash
+oc mailbox link cash-claw-rig-a --rig "Rig A" --runtime claude-code --workspace ~/dev/cash-claw
+oc mailbox link cash-claw-rig-b --rig "Rig B" --runtime codex --workspace ~/dev/cash-claw
+```
+
+This configures the mailbox `tmux` notifier as `<session>:main`, matching the
+session/window shape created by `oc new`. If the session already has an agent
+running in another window, `oc` auto-targets the agent window instead, for
+example `cash claw:shell` when Claude is running in the `shell` window. Mailbox
+wakes then use `tmux send-keys ... Enter`, so they do not steal macOS focus and
+do not depend on changing iTerm tab titles.
+
+Mailbox linking also writes `RIG_NAME` and `RIG_WORKSPACE` into the tmux
+session environment. Newly launched shells and agents in that session inherit
+their identity automatically. Already-running agent processes cannot have their
+Unix environment changed from outside; restart the agent inside the linked tmux
+session if it was started before the mailbox link existed.
+
+When a tmux session contains multiple windows, expand the session in `oc attach`
+to see individual windows. Press `Enter` on a window row to attach directly to
+that window. Press `x` on a window row to kill that tmux window.
+
 ### Clipboard over SSH (tmux + OSC52)
 
-`oc` can install a managed tmux clipboard include so copy-mode selections can reach your local
-clipboard across SSH (OSC52-first).
+`oc attach` auto-installs and reloads the managed tmux clipboard include when
+needed. It keeps tmux mouse reporting on so Mosh can preserve trackpad and
+scroll-wheel scrolling, and binds tmux mouse drag-release to copy through OSC52
+or the host clipboard.
+The manual commands are available for inspection or repair:
 
 ```bash
 oc clipboard setup --mode auto --reload
@@ -99,7 +152,10 @@ oc clipboard verify
 
 Notes:
 - Run setup on the same host where tmux runs.
-- Default setup enables tmux mouse support, auto-copies on mouse drag release, and binds copy-mode `y` as a fallback.
+- `oc attach` and default setup use tmux mouse mode (`set -g mouse on`) so Mosh scrolling keeps working.
+- Drag selection inside tmux copies on mouse release; copy-mode `y` is still bound as a keyboard fallback.
+- If you need direct local iTerm2 selection instead of tmux selection, use Option-drag.
+- If you want terminal selection behavior and can live without tmux/Mosh mouse scrolling, run `oc clipboard setup --mouse-mode terminal --reload`.
 - If your terminal blocks OSC52, `verify` may show emission success but clipboard failure.
 - Uninstall managed config:
 
