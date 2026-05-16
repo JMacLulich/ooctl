@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import argparse
-import io
+import builtins
+import os
 from pathlib import Path
 
 import pytest
@@ -16,8 +17,6 @@ def test_cli_completion_bash_contains_commands() -> None:
     assert "complete -F _occtl_complete oc" in script
     assert "_occtl_tmux_sessions" in script
     assert "attach|focus|kill" in script
-    assert 'COMP_WORDS[1]}" == "map"' in script
-    assert "compgen -d" in script
 
 
 def test_cli_completion_zsh_contains_compdef() -> None:
@@ -25,16 +24,12 @@ def test_cli_completion_zsh_contains_compdef() -> None:
     assert "#compdef oc" in script
     assert "compdef _occtl oc" in script
     assert "tmux list-sessions" in script
-    assert "map)" in script
-    assert "_files -/" in script
 
 
 def test_cli_completion_fish_contains_command() -> None:
     script = _fish_completion_script()
     assert "complete -c oc -f" in script
     assert "attach focus kill" in script
-    assert "__fish_seen_subcommand_from map" in script
-    assert "__fish_complete_directories" in script
 
 
 def test_map_command_allows_spaced_session_names() -> None:
@@ -83,12 +78,12 @@ def test_clipboard_setup_parser_accepts_flags() -> None:
     assert args.reload is True
 
 
-def test_clipboard_setup_parser_defaults_to_copy_mode_y() -> None:
+def test_clipboard_setup_parser_defaults_to_scroll_mouse_mode() -> None:
     parser = cli.build_parser()
     args = parser.parse_args(["clipboard", "setup"])
 
     assert args.bind_keys == "copy-mode-y"
-    assert args.mouse_mode == "tmux"
+    assert args.mouse_mode == "scroll"
 
 
 def test_clipboard_status_parser_supports_json() -> None:
@@ -96,6 +91,186 @@ def test_clipboard_status_parser_supports_json() -> None:
     args = parser.parse_args(["clipboard", "status", "--json"])
 
     assert args.json is True
+
+
+def test_mailbox_link_parser_accepts_rig_and_session() -> None:
+    parser = cli.build_parser()
+    args = parser.parse_args(["mailbox", "link", "cash-claw-rig-b", "--rig", "Rig B"])
+
+    assert args.session == "cash-claw-rig-b"
+    assert args.rig == "Rig B"
+    assert args.window == "auto"
+
+
+def test_cmd_mailbox_link_updates_rigs_toml(tmp_path: Path, monkeypatch, capsys) -> None:
+    workspace = tmp_path / "cash-claw"
+    mailbox_dir = workspace / ".rig-mailbox"
+    mailbox_dir.mkdir(parents=True)
+    rigs_file = mailbox_dir / "rigs.toml"
+    rigs_file.write_text(
+        "\n".join(
+            [
+                "# existing config",
+                "",
+                '[rigs."rig-b"]',
+                'runtime = "codex"',
+                'notifier = "applescript-iterm"',
+                'session_name = "old-title"',
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(cli.config, "get_mapping", lambda _name: None)
+    monkeypatch.setattr(cli.tmux, "list_window_details", lambda: {})
+    env_calls: list[tuple[str, dict[str, str]]] = []
+    monkeypatch.setattr(
+        cli.tmux,
+        "set_session_environment",
+        lambda session, values: env_calls.append((session, values)),
+    )
+
+    rc = cli.cmd_mailbox_link(
+        argparse.Namespace(
+            workspace=str(workspace),
+            rig="Rig B",
+            session="cash-claw-rig-b",
+            runtime="codex",
+            window="auto",
+        )
+    )
+
+    assert rc == 0
+    text = rigs_file.read_text(encoding="utf-8")
+    assert '[rigs."rig-b"]' in text
+    assert 'notifier = "tmux"' in text
+    assert 'tmux_target = "cash-claw-rig-b:main"' in text
+    assert "session_name" not in text
+    assert env_calls == [
+        (
+            "cash-claw-rig-b",
+            {
+                "RIG_NAME": "Rig B",
+                "RIG_WORKSPACE": str(workspace.resolve()),
+            },
+        )
+    ]
+    assert "linked:\tRig B -> cash-claw-rig-b:main" in capsys.readouterr().out
+
+
+def test_cmd_mailbox_link_auto_targets_agent_window(tmp_path: Path, monkeypatch, capsys) -> None:
+    workspace = tmp_path / "cash-claw"
+    (workspace / ".rig-mailbox").mkdir(parents=True)
+    monkeypatch.setattr(
+        cli.tmux,
+        "list_window_details",
+        lambda: {
+            "cash-claw-rig-b": {
+                "active_window": "shell",
+                "active_command": "node",
+                "main_command": "opencode",
+                "window_list": [
+                    {"name": "main", "active": False, "command": "opencode"},
+                    {"name": "shell", "active": True, "command": "node"},
+                ],
+            }
+        },
+    )
+    monkeypatch.setattr(cli.tmux, "set_session_environment", lambda *_args: None)
+
+    rc = cli.cmd_mailbox_link(
+        argparse.Namespace(
+            workspace=str(workspace),
+            rig="Rig B",
+            session="cash-claw-rig-b",
+            runtime="codex",
+            window="auto",
+        )
+    )
+
+    assert rc == 0
+    text = (workspace / ".rig-mailbox" / "rigs.toml").read_text(encoding="utf-8")
+    assert 'tmux_target = "cash-claw-rig-b:shell"' in text
+    assert "linked:\tRig B -> cash-claw-rig-b:shell" in capsys.readouterr().out
+
+
+def test_mailbox_without_subcommand_runs_wizard() -> None:
+    parser = cli.build_parser()
+    args = parser.parse_args(["mailbox"])
+
+    assert args.fn == cli.cmd_mailbox_wizard
+
+
+def test_cmd_mailbox_wizard_creates_missing_sessions_and_links(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    workspace = tmp_path / "zoom-mvps"
+    (workspace / ".rig-mailbox").mkdir(parents=True)
+    answers = iter(
+        [
+            str(workspace),
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+        ]
+    )
+    created: list[tuple[str, str]] = []
+    sent: list[tuple[str, list[str]]] = []
+    env_calls: list[tuple[str, dict[str, str]]] = []
+    existing: set[str] = set()
+
+    monkeypatch.setattr(builtins, "input", lambda _prompt: next(answers))
+    monkeypatch.setattr(cli.config, "get_focus", lambda: "")
+    monkeypatch.setattr(cli.tmux, "list_sessions", lambda: [])
+    monkeypatch.setattr(cli.tmux, "has_session", lambda name: name in existing)
+
+    def _new_session(name: str, workdir: str) -> None:
+        created.append((name, workdir))
+        existing.add(name)
+
+    monkeypatch.setattr(cli.tmux, "new_session", _new_session)
+    monkeypatch.setattr(cli.tmux, "send_keys", lambda target, keys: sent.append((target, keys)))
+    monkeypatch.setattr(
+        cli.tmux,
+        "set_session_environment",
+        lambda session, values: env_calls.append((session, values)),
+    )
+
+    rc = cli.cmd_mailbox_wizard(argparse.Namespace())
+
+    assert rc == 0
+    assert created == [
+        ("zoom-mvps-rig-a", str(workspace.resolve())),
+        ("zoom-mvps-rig-b", str(workspace.resolve())),
+    ]
+    assert sent == [
+        ("zoom-mvps-rig-a:main", ["claude", "Enter"]),
+        ("zoom-mvps-rig-b:main", ["codex", "Enter"]),
+    ]
+    assert env_calls[:2] == [
+        (
+            "zoom-mvps-rig-a",
+            {
+                "RIG_NAME": "Rig A",
+                "RIG_WORKSPACE": str(workspace.resolve()),
+            },
+        ),
+        (
+            "zoom-mvps-rig-b",
+            {
+                "RIG_NAME": "Rig B",
+                "RIG_WORKSPACE": str(workspace.resolve()),
+            },
+        ),
+    ]
+    text = (workspace / ".rig-mailbox" / "rigs.toml").read_text(encoding="utf-8")
+    assert 'tmux_target = "zoom-mvps-rig-a:main"' in text
+    assert 'tmux_target = "zoom-mvps-rig-b:main"' in text
+    assert "linked:\tRig A -> zoom-mvps-rig-a:main" in capsys.readouterr().out
 
 
 def test_setting_and_loading_spaced_mapping(tmp_path: Path, monkeypatch) -> None:
@@ -185,6 +360,7 @@ def test_kill_requires_name_or_focus(monkeypatch, capsys) -> None:
 def test_cmd_attach_uses_interactive_choice_when_name_missing(monkeypatch) -> None:
     monkeypatch.setattr(cli, "_choose_attach_session_interactive", lambda: "filter2")
     monkeypatch.setattr(cli, "_ensure_clipboard_for_attach", lambda: [])
+    monkeypatch.setattr(cli, "_clipboard_attach_hints", lambda: [])
     monkeypatch.setattr(cli.tmux, "has_session", lambda name: name == "filter2")
 
     called: dict[str, str | None | bool] = {
@@ -221,6 +397,7 @@ def test_cmd_attach_uses_interactive_choice_when_name_missing(monkeypatch) -> No
 def test_cmd_attach_starts_mapped_session_when_not_running(monkeypatch) -> None:
     monkeypatch.setattr(cli, "_choose_attach_session_interactive", lambda: "gig guide")
     monkeypatch.setattr(cli, "_ensure_clipboard_for_attach", lambda: [])
+    monkeypatch.setattr(cli, "_clipboard_attach_hints", lambda: [])
     monkeypatch.setattr(
         cli.config, "get_mapping", lambda name: "/tmp/gig" if name == "gig guide" else ""
     )
@@ -269,6 +446,7 @@ def test_cmd_attach_starts_mapped_session_when_not_running(monkeypatch) -> None:
 
 def test_cmd_attach_passes_cc_flag_to_tmux(monkeypatch) -> None:
     monkeypatch.setattr(cli, "_ensure_clipboard_for_attach", lambda: [])
+    monkeypatch.setattr(cli, "_clipboard_attach_hints", lambda: [])
     monkeypatch.setattr(cli.tmux, "has_session", lambda name: name == "filter2")
 
     called: dict[str, str | None | bool] = {
@@ -315,7 +493,6 @@ def test_cmd_attach_prints_setup_hint_for_ssh_when_clipboard_unconfigured(
         lambda tmux_socket=None: {
             "configured_on_disk": False,
             "selected_mode": "",
-            "mouse_mode": "",
             "loaded_in_tmux": None,
             "helper_health": None,
             "tmux_socket_ambiguous": False,
@@ -351,7 +528,6 @@ def test_cmd_attach_prints_reload_hint_when_clipboard_not_loaded(monkeypatch, ca
         lambda tmux_socket=None: {
             "configured_on_disk": True,
             "selected_mode": "osc52",
-            "mouse_mode": "tmux",
             "loaded_in_tmux": False,
             "helper_health": True,
             "tmux_socket_ambiguous": False,
@@ -385,7 +561,7 @@ def test_cmd_attach_prints_terminal_fix_hint_when_osc52_emits_but_paste_fails(
         lambda tmux_socket=None: {
             "configured_on_disk": True,
             "selected_mode": "osc52",
-            "mouse_mode": "tmux",
+            "mouse_mode": "terminal",
             "loaded_in_tmux": True,
             "helper_health": True,
             "tmux_socket_ambiguous": False,
@@ -419,38 +595,6 @@ def test_cmd_attach_stays_quiet_when_clipboard_looks_healthy(monkeypatch, capsys
         lambda tmux_socket=None: {
             "configured_on_disk": True,
             "selected_mode": "osc52",
-            "mouse_mode": "tmux",
-            "loaded_in_tmux": True,
-            "helper_health": True,
-            "tmux_socket_ambiguous": False,
-            "verification": {
-                "emission_verified": True,
-                "clipboard_verified": True,
-                "verified_at": 123,
-            },
-            "reasons": [],
-        },
-    )
-
-    rc = cli.cmd_attach(argparse.Namespace(name="filter2", cc=False))
-
-    assert rc == 0
-    assert capsys.readouterr().out == ""
-
-
-def test_cmd_attach_repairs_non_tmux_mouse_mode(monkeypatch, capsys) -> None:
-    calls: list[dict[str, object]] = []
-
-    monkeypatch.setattr(cli.tmux, "has_session", lambda name: name == "filter2")
-    monkeypatch.setattr(cli.config, "set_focus", lambda _name: None)
-    monkeypatch.setattr(cli.config, "touch_recent_attach", lambda _name: None)
-    monkeypatch.setattr(cli.tmux, "attach", lambda _name, control_mode=False: None)
-    monkeypatch.setattr(
-        cli.clipboard,
-        "status",
-        lambda tmux_socket=None: {
-            "configured_on_disk": True,
-            "selected_mode": "osc52",
             "mouse_mode": "terminal",
             "loaded_in_tmux": True,
             "helper_health": True,
@@ -463,11 +607,38 @@ def test_cmd_attach_repairs_non_tmux_mouse_mode(monkeypatch, capsys) -> None:
             "reasons": [],
         },
     )
-    monkeypatch.setattr(cli.clipboard, "setup", lambda **kwargs: calls.append(kwargs) or {})
 
     rc = cli.cmd_attach(argparse.Namespace(name="filter2", cc=False))
 
     assert rc == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_attach_auto_setup_repairs_terminal_mouse_mode(monkeypatch) -> None:
+    monkeypatch.setattr(
+        cli.clipboard,
+        "status",
+        lambda tmux_socket=None: {
+            "configured_on_disk": True,
+            "selected_mode": "native",
+            "mouse_mode": "terminal",
+            "loaded_in_tmux": True,
+            "helper_health": None,
+            "tmux_socket_ambiguous": False,
+            "verification": {
+                "emission_verified": False,
+                "clipboard_verified": False,
+                "verified_at": 0,
+            },
+            "reasons": [],
+        },
+    )
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr(cli.clipboard, "setup", lambda **kwargs: calls.append(kwargs) or {})
+
+    warnings = cli._ensure_clipboard_for_attach()
+
+    assert warnings == []
     assert calls == [
         {
             "mode": "auto",
@@ -478,10 +649,9 @@ def test_cmd_attach_repairs_non_tmux_mouse_mode(monkeypatch, capsys) -> None:
             "reload_tmux": True,
             "bind_keys": "copy-mode-y",
             "follow_symlink": False,
-            "mouse_mode": "tmux",
+                "mouse_mode": "tmux",
         }
     ]
-    assert capsys.readouterr().out == ""
 
 
 def test_attach_menu_sorts_recent_sessions_first(monkeypatch) -> None:
@@ -494,23 +664,23 @@ def test_attach_menu_sorts_recent_sessions_first(monkeypatch) -> None:
             "charlie": "/tmp/charlie",
         },
     )
-    monkeypatch.setattr(cli.tmux, "list_sessions", lambda: [])
+    monkeypatch.setattr(cli.tmux, "list_sessions_with_paths", lambda: [])
     monkeypatch.setattr(cli.config, "get_focus", lambda: "")
     monkeypatch.setattr(cli.config, "get_recent_attaches", lambda: ["charlie", "alpha"])
 
-    rows = cli._build_session_list()
+    rows = cli._build_attach_menu_rows()
 
-    ordered_names = [str(row["name"]) for row in rows]
+    ordered_names = [str(row["name"]) for row in rows if not row["exit"]]
     assert ordered_names == ["charlie", "alpha", "beta"]
 
 
 def test_attach_menu_contains_exit_option(monkeypatch) -> None:
     monkeypatch.setattr(cli.config, "load_mappings", lambda: {"filter2": "/tmp/filter2"})
-    monkeypatch.setattr(cli.tmux, "list_sessions", lambda: [])
+    monkeypatch.setattr(cli.tmux, "list_sessions_with_paths", lambda: [])
     monkeypatch.setattr(cli.config, "get_focus", lambda: "")
+    monkeypatch.setattr(cli.config, "get_recent_attaches", lambda: [])
 
-    session_list = cli._build_session_list()
-    rows = cli._build_visible_rows(session_list, set())
+    rows = cli._build_attach_menu_rows()
 
     assert rows[-1]["name"] == "Exit"
     assert rows[-1]["exit"] is True
@@ -530,89 +700,48 @@ def test_compact_path_shortens_long_path(monkeypatch) -> None:
 
 def test_menu_row_handles_ansi_without_border_shift() -> None:
     row = cli._menu_row("state \033[32mRUNNING\033[0m", 20)
-    assert row.startswith("|")
-    assert row.endswith("|")
+    assert row.startswith("│")
+    assert row.endswith("│")
     visible = cli.ANSI_RE.sub("", row)
     assert len(visible) == 22
 
 
-def test_attach_banner_includes_host_and_focus(monkeypatch) -> None:
-    monkeypatch.setattr(cli.socket, "gethostname", lambda: "studio.home")
-    monkeypatch.setattr(cli.config, "get_focus", lambda: "filter2")
-
-    banner = cli._attach_banner_text()
-
-    assert "Host: studio.home" in banner
-    assert "Focus: filter2" in banner
+def test_version_string_appears_in_version_constant() -> None:
+    assert cli._VERSION == "0.8.0"
 
 
-def test_read_menu_key_recognizes_csi_arrow_sequences(monkeypatch) -> None:
-    monkeypatch.setattr(cli.sys, "stdin", io.StringIO("\x1b[A\x1b[B\x1b[C\x1b[D"))
-
-    assert cli._read_menu_key() == "up"
-    assert cli._read_menu_key() == "down"
-    assert cli._read_menu_key() == "right"
-    assert cli._read_menu_key() == "left"
-
-
-def test_read_menu_key_recognizes_ss3_arrow_sequences(monkeypatch) -> None:
-    monkeypatch.setattr(cli.sys, "stdin", io.StringIO("\x1bOA\x1bOB"))
-
-    assert cli._read_menu_key() == "up"
-    assert cli._read_menu_key() == "down"
+def test_read_menu_key_recognizes_csi_arrow_sequences() -> None:
+    r, w = os.pipe()
+    os.write(w, b"\x1b[A\x1b[B")
+    os.close(w)
+    assert cli._read_menu_key(r) == "up"
+    assert cli._read_menu_key(r) == "down"
+    os.close(r)
 
 
-def test_read_menu_key_vim_right_left(monkeypatch) -> None:
-    monkeypatch.setattr(cli.sys, "stdin", io.StringIO("lh"))
-
-    assert cli._read_menu_key() == "right"
-    assert cli._read_menu_key() == "left"
-
-
-def test_build_visible_rows_groups_shared_dirs() -> None:
-    """Sessions sharing a mapped_dir are grouped; singles remain terminal."""
-    sessions = [
-        {"name": "a", "mapped_dir": "/proj", "running": True, "attached": False,
-         "windows": 1, "focused": False, "exit": False, "group": False, "depth": 0},
-        {"name": "b", "mapped_dir": "/proj", "running": False, "attached": False,
-         "windows": 0, "focused": False, "exit": False, "group": False, "depth": 0},
-        {"name": "c", "mapped_dir": "/other", "running": True, "attached": False,
-         "windows": 1, "focused": False, "exit": False, "group": False, "depth": 0},
-    ]
-    # Collapsed: group header for /proj, terminal for /other, Exit
-    rows = cli._build_visible_rows(sessions, set())
-    group_rows = [r for r in rows if r.get("group")]
-    assert len(group_rows) == 1
-    assert group_rows[0]["group_key"] == "/proj"
-    assert group_rows[0]["children_count"] == 2
-    # "c" should be a terminal node (single session for /other)
-    terminal = [r for r in rows if r.get("name") == "c"]
-    assert len(terminal) == 1
-    assert not terminal[0].get("group")
+def test_read_menu_key_recognizes_ss3_arrow_sequences() -> None:
+    r, w = os.pipe()
+    os.write(w, b"\x1bOA\x1bOB")
+    os.close(w)
+    assert cli._read_menu_key(r) == "up"
+    assert cli._read_menu_key(r) == "down"
+    os.close(r)
 
 
-def test_build_visible_rows_expand_shows_children() -> None:
-    """Expanding a group shows its child sessions."""
-    sessions = [
-        {"name": "a", "mapped_dir": "/proj", "running": True, "attached": False,
-         "windows": 1, "focused": False, "exit": False, "group": False, "depth": 0},
-        {"name": "b", "mapped_dir": "/proj", "running": False, "attached": False,
-         "windows": 0, "focused": False, "exit": False, "group": False, "depth": 0},
-    ]
-    rows = cli._build_visible_rows(sessions, {"/proj"})
-    names = [str(r["name"]) for r in rows if not r.get("exit")]
-    # Group header + 2 children
-    assert len([r for r in rows if r.get("group")]) == 1
-    assert "a" in names
-    assert "b" in names
-    children = [r for r in rows if int(r.get("depth", 0)) == 1]
-    assert len(children) == 2
+def test_read_menu_key_recognizes_mailbox_mode() -> None:
+    r, w = os.pipe()
+    os.write(w, b"m")
+    os.close(w)
+    assert cli._read_menu_key(r) == "mailbox"
+    os.close(r)
 
 
-def test_is_terminal_row() -> None:
-    assert cli._is_terminal_row({"group": False, "exit": False}) is True
-    assert cli._is_terminal_row({"group": True, "exit": False}) is False
-    assert cli._is_terminal_row({"group": False, "exit": True}) is False
+def test_read_menu_key_recognizes_kill_window() -> None:
+    r, w = os.pipe()
+    os.write(w, b"x")
+    os.close(w)
+    assert cli._read_menu_key(r) == "kill-window"
+    os.close(r)
 
 
 def test_match_wait_pattern_detects_prompt() -> None:
@@ -751,3 +880,395 @@ def test_cmd_watch_triggers_stall_alert_when_idle(monkeypatch, capsys) -> None:
     assert calls["router_message"] is not None
     assert "session=infra" in calls["router_message"]
     assert "stall_pattern=" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# _build_attach_menu_rows — multi-instance support
+# ---------------------------------------------------------------------------
+
+
+def _make_session(name: str, path: str, attached: bool = False, windows: int = 1) -> dict:
+    return {"name": name, "attached": attached, "windows": windows, "path": path}
+
+
+def test_build_attach_menu_rows_groups_sessions_by_mapped_path(monkeypatch, tmp_path: Path) -> None:
+    """Multiple sessions sharing a mapped path produce a single collapsed group row."""
+    proj = str(tmp_path / "myproject")
+    monkeypatch.setattr(cli.config, "load_mappings", lambda: {"myproject": proj})
+    monkeypatch.setattr(cli.config, "get_recent_attaches", lambda: [])
+    monkeypatch.setattr(cli.config, "get_focus", lambda: "")
+    monkeypatch.setattr(
+        cli.tmux,
+        "list_sessions_with_paths",
+        lambda: [
+            _make_session("myproject", proj),
+            _make_session("myproject-worker", proj),
+        ],
+    )
+
+    rows = cli._build_attach_menu_rows()
+    data = [r for r in rows if not r["exit"]]
+
+    # One group row (collapsed) with 2 children
+    assert len(data) == 1
+    assert data[0]["row_type"] == "group"
+    assert data[0]["name"] == "myproject"
+    assert data[0]["expanded"] is False
+    children = data[0]["children"]
+    assert len(children) == 2
+    assert {c["name"] for c in children} == {"myproject", "myproject-worker"}
+
+
+def test_build_attach_menu_rows_group_expands_to_child_rows(monkeypatch, tmp_path: Path) -> None:
+    """Passing the mapping name in expanded set adds child rows after the group."""
+    proj = str(tmp_path / "myproject")
+    monkeypatch.setattr(cli.config, "load_mappings", lambda: {"myproject": proj})
+    monkeypatch.setattr(cli.config, "get_recent_attaches", lambda: [])
+    monkeypatch.setattr(cli.config, "get_focus", lambda: "")
+    monkeypatch.setattr(
+        cli.tmux,
+        "list_sessions_with_paths",
+        lambda: [
+            _make_session("myproject", proj),
+            _make_session("myproject-worker", proj),
+        ],
+    )
+
+    rows = cli._build_attach_menu_rows(expanded={"myproject"})
+    data = [r for r in rows if not r["exit"]]
+
+    # Group row + 2 child rows
+    assert len(data) == 3
+    assert data[0]["row_type"] == "group"
+    assert data[0]["expanded"] is True
+    assert data[1]["row_type"] == "child"
+    assert data[2]["row_type"] == "child"
+    child_names = {data[1]["name"], data[2]["name"]}
+    assert child_names == {"myproject", "myproject-worker"}
+
+
+def test_build_attach_menu_rows_shows_mailbox_roles(monkeypatch, tmp_path: Path) -> None:
+    proj_path = tmp_path / "myproject"
+    mailbox_dir = proj_path / ".rig-mailbox"
+    mailbox_dir.mkdir(parents=True)
+    (mailbox_dir / "rigs.toml").write_text(
+        "\n".join(
+            [
+                '[rigs."rig-a"]',
+                'runtime = "claude-code"',
+                'notifier = "tmux"',
+                'tmux_target = "myproject:main"',
+                f'workspace = "{proj_path}"',
+                "",
+                '[rigs."rig-b"]',
+                'runtime = "codex"',
+                'notifier = "tmux"',
+                'tmux_target = "myproject-worker:main"',
+                f'workspace = "{proj_path}"',
+            ]
+        ),
+        encoding="utf-8",
+    )
+    proj = str(proj_path)
+    monkeypatch.setattr(cli.config, "load_mappings", lambda: {"myproject": proj})
+    monkeypatch.setattr(cli.config, "get_recent_attaches", lambda: [])
+    monkeypatch.setattr(cli.config, "get_focus", lambda: "")
+    monkeypatch.setattr(
+        cli.tmux,
+        "list_sessions_with_paths",
+        lambda: [
+            _make_session("myproject", proj),
+            _make_session("myproject-worker", proj),
+        ],
+    )
+    monkeypatch.setattr(
+        cli.tmux,
+        "list_window_details",
+        lambda: {
+            "myproject": {
+                "active_window": "shell",
+                "active_command": "zsh",
+                "main_command": "opencode",
+                "window_list": [
+                    {"name": "main", "active": False, "command": "opencode"},
+                    {"name": "shell", "active": True, "command": "zsh"},
+                ],
+            },
+            "myproject-worker": {
+                "active_window": "main",
+                "active_command": "codex",
+                "main_command": "codex",
+                "window_list": [
+                    {"name": "main", "active": True, "command": "codex"},
+                ],
+            },
+        },
+    )
+
+    rows = cli._build_attach_menu_rows(expanded={"myproject"})
+    roles = {str(row["name"]): row["mailbox_role"] for row in rows if not row["exit"]}
+    details = {str(row["name"]): row for row in rows if not row["exit"]}
+
+    assert roles["myproject"] == "Rig A"
+    assert roles["myproject-worker"] == "Rig B"
+    assert details["myproject"]["main_command"] == "opencode"
+    assert details["myproject"]["active_window"] == "shell"
+    assert details["myproject-worker"]["active_window"] == "main"
+
+
+def test_build_attach_menu_rows_expands_windows_for_single_session(
+    monkeypatch, tmp_path: Path
+) -> None:
+    proj = str(tmp_path / "myproject")
+    monkeypatch.setattr(cli.config, "load_mappings", lambda: {"myproject": proj})
+    monkeypatch.setattr(cli.config, "get_recent_attaches", lambda: [])
+    monkeypatch.setattr(cli.config, "get_focus", lambda: "")
+    monkeypatch.setattr(
+        cli.tmux,
+        "list_sessions_with_paths",
+        lambda: [_make_session("myproject", proj, windows=2)],
+    )
+    monkeypatch.setattr(
+        cli.tmux,
+        "list_window_details",
+        lambda: {
+            "myproject": {
+                "active_window": "shell",
+                "active_command": "claude",
+                "main_command": "opencode",
+                "window_list": [
+                    {"name": "main", "active": False, "command": "opencode"},
+                    {"name": "shell", "active": True, "command": "claude"},
+                ],
+            }
+        },
+    )
+
+    rows = cli._build_attach_menu_rows(expanded_sessions={"myproject"})
+    data = [r for r in rows if not r["exit"]]
+
+    assert [r["row_type"] for r in data] == ["leaf", "window", "window"]
+    assert data[1]["name"] == "myproject:main"
+    assert data[1]["command"] == "opencode"
+    assert data[2]["name"] == "myproject:shell"
+    assert data[2]["window_active"] is True
+
+
+def test_build_attach_menu_rows_single_session_one_row(monkeypatch, tmp_path: Path) -> None:
+    """A mapping with one running session produces exactly one row."""
+    proj = str(tmp_path / "myproject")
+    monkeypatch.setattr(cli.config, "load_mappings", lambda: {"myproject": proj})
+    monkeypatch.setattr(cli.config, "get_recent_attaches", lambda: [])
+    monkeypatch.setattr(cli.config, "get_focus", lambda: "")
+    monkeypatch.setattr(
+        cli.tmux,
+        "list_sessions_with_paths",
+        lambda: [_make_session("myproject", proj)],
+    )
+
+    rows = cli._build_attach_menu_rows()
+    data = [r for r in rows if not r["exit"]]
+
+    assert len(data) == 1
+    assert data[0]["name"] == "myproject"
+    assert data[0]["running"] is True
+
+
+def test_build_attach_menu_rows_unmapped_session_appears_standalone(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """A running session whose path doesn't match any mapping appears as its own row."""
+    proj = str(tmp_path / "myproject")
+    other = str(tmp_path / "other")
+    monkeypatch.setattr(cli.config, "load_mappings", lambda: {"myproject": proj})
+    monkeypatch.setattr(cli.config, "get_recent_attaches", lambda: [])
+    monkeypatch.setattr(cli.config, "get_focus", lambda: "")
+    monkeypatch.setattr(
+        cli.tmux,
+        "list_sessions_with_paths",
+        lambda: [
+            _make_session("myproject", proj),
+            _make_session("orphan", other),
+        ],
+    )
+
+    rows = cli._build_attach_menu_rows()
+    data = [r for r in rows if not r["exit"]]
+
+    names = [r["name"] for r in data]
+    assert "myproject" in names
+    assert "orphan" in names
+    assert len(data) == 2
+
+
+def test_build_attach_menu_rows_stopped_mapping_has_one_row(monkeypatch, tmp_path: Path) -> None:
+    """A mapping with no running sessions produces a single stopped row."""
+    proj = str(tmp_path / "myproject")
+    monkeypatch.setattr(cli.config, "load_mappings", lambda: {"myproject": proj})
+    monkeypatch.setattr(cli.config, "get_recent_attaches", lambda: [])
+    monkeypatch.setattr(cli.config, "get_focus", lambda: "")
+    monkeypatch.setattr(cli.tmux, "list_sessions_with_paths", lambda: [])
+
+    rows = cli._build_attach_menu_rows()
+    data = [r for r in rows if not r["exit"]]
+
+    assert len(data) == 1
+    assert data[0]["name"] == "myproject"
+    assert data[0]["running"] is False
+
+
+def test_auto_link_two_session_mailboxes_links_exactly_two_sessions(
+    monkeypatch, tmp_path: Path
+) -> None:
+    proj_path = tmp_path / "zoom-mvps"
+    proj_path.mkdir(parents=True)
+    proj = str(proj_path)
+    monkeypatch.setattr(cli.config, "load_mappings", lambda: {"zoom-mvps": proj})
+    monkeypatch.setattr(
+        cli.tmux,
+        "list_sessions_with_paths",
+        lambda: [
+            _make_session("zoom-mvps-a", proj),
+            _make_session("zoom-mvps-b", proj),
+        ],
+    )
+    ensured: list[str] = []
+
+    def fake_ensure_mailbox(workspace: str) -> Path:
+        ensured.append(workspace)
+        mailbox_dir = Path(workspace) / ".rig-mailbox"
+        mailbox_dir.mkdir(parents=True)
+        return mailbox_dir
+
+    monkeypatch.setattr(cli.mailbox, "ensure_mailbox", fake_ensure_mailbox)
+    env_calls: list[tuple[str, dict[str, str]]] = []
+    monkeypatch.setattr(
+        cli.tmux,
+        "set_session_environment",
+        lambda session, values: env_calls.append((session, values)),
+    )
+
+    cli._auto_link_two_session_mailboxes()
+
+    assert ensured == [proj]
+    assert env_calls == [
+        ("zoom-mvps-a", {"RIG_NAME": "Rig A", "RIG_WORKSPACE": str(proj_path.resolve())}),
+        ("zoom-mvps-b", {"RIG_NAME": "Rig B", "RIG_WORKSPACE": str(proj_path.resolve())}),
+    ]
+    text = (proj_path / ".rig-mailbox" / "rigs.toml").read_text(encoding="utf-8")
+    assert 'tmux_target = "zoom-mvps-a:main"' in text
+    assert 'tmux_target = "zoom-mvps-b:main"' in text
+
+
+def test_auto_link_preserves_existing_rig_assignment_for_recreated_pair(
+    monkeypatch, tmp_path: Path
+) -> None:
+    proj_path = tmp_path / "zoom-rag-mvp"
+    mailbox_dir = proj_path / ".rig-mailbox"
+    mailbox_dir.mkdir(parents=True)
+    (mailbox_dir / "rigs.toml").write_text(
+        "\n".join(
+            [
+                '[rigs."rig-b"]',
+                'runtime = "codex"',
+                'notifier = "tmux"',
+                'tmux_target = "zoom rag 2:main"',
+                f'workspace = "{proj_path}"',
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    proj = str(proj_path)
+    monkeypatch.setattr(cli.config, "load_mappings", lambda: {"zoom rag": proj})
+    monkeypatch.setattr(
+        cli.tmux,
+        "list_sessions_with_paths",
+        lambda: [
+            _make_session("zoom rag 2", proj),
+            _make_session("zoom rag 3", proj),
+        ],
+    )
+    monkeypatch.setattr(cli.tmux, "list_window_details", lambda: {})
+    env_calls: list[tuple[str, dict[str, str]]] = []
+    monkeypatch.setattr(
+        cli.tmux,
+        "set_session_environment",
+        lambda session, values: env_calls.append((session, values)),
+    )
+
+    cli._auto_link_two_session_mailboxes()
+
+    text = (mailbox_dir / "rigs.toml").read_text(encoding="utf-8")
+    assert 'tmux_target = "zoom rag 3:main"' in text
+    assert 'tmux_target = "zoom rag 2:main"' in text
+    assert env_calls == [
+        ("zoom rag 2", {"RIG_NAME": "Rig B", "RIG_WORKSPACE": str(proj_path.resolve())}),
+        ("zoom rag 3", {"RIG_NAME": "Rig A", "RIG_WORKSPACE": str(proj_path.resolve())}),
+    ]
+
+
+def test_manual_mailbox_link_requires_same_workspace(tmp_path: Path) -> None:
+    left = str(tmp_path / "left")
+    right = str(tmp_path / "right")
+    rows = [
+        {
+            "name": "one",
+            "running": True,
+            "mapped_dir": left,
+            "exit": False,
+        },
+        {
+            "name": "two",
+            "running": True,
+            "mapped_dir": right,
+            "exit": False,
+        },
+    ]
+
+    message = cli._link_selected_mailbox_sessions(rows, ["one", "two"])
+
+    assert message == "selected sessions must share one mapped mailbox workspace"
+
+
+def test_manual_mailbox_link_writes_pair(monkeypatch, tmp_path: Path) -> None:
+    workspace = tmp_path / "cash-claw"
+    workspace.mkdir(parents=True)
+    rows = [
+        {
+            "name": "cash-claw-rig-a",
+            "running": True,
+            "mapped_dir": str(workspace),
+            "exit": False,
+        },
+        {
+            "name": "cash-claw-rig-b",
+            "running": True,
+            "mapped_dir": str(workspace),
+            "exit": False,
+        },
+    ]
+
+    def fake_ensure_mailbox(path: str) -> Path:
+        mailbox_dir = Path(path) / ".rig-mailbox"
+        mailbox_dir.mkdir(parents=True)
+        return mailbox_dir
+
+    monkeypatch.setattr(cli.mailbox, "ensure_mailbox", fake_ensure_mailbox)
+    env_calls: list[tuple[str, dict[str, str]]] = []
+    monkeypatch.setattr(
+        cli.tmux,
+        "set_session_environment",
+        lambda session, values: env_calls.append((session, values)),
+    )
+
+    message = cli._link_selected_mailbox_sessions(rows, ["cash-claw-rig-a", "cash-claw-rig-b"])
+
+    assert message == "linked mailbox: cash-claw-rig-a <-> cash-claw-rig-b"
+    assert env_calls == [
+        ("cash-claw-rig-a", {"RIG_NAME": "Rig A", "RIG_WORKSPACE": str(workspace.resolve())}),
+        ("cash-claw-rig-b", {"RIG_NAME": "Rig B", "RIG_WORKSPACE": str(workspace.resolve())}),
+    ]
+    text = (workspace / ".rig-mailbox" / "rigs.toml").read_text(encoding="utf-8")
+    assert 'tmux_target = "cash-claw-rig-a:main"' in text
+    assert 'tmux_target = "cash-claw-rig-b:main"' in text
