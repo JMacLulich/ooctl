@@ -17,11 +17,6 @@ from contextlib import suppress
 from datetime import datetime
 from pathlib import Path
 
-try:
-    import readline
-except ImportError:
-    readline = None  # type: ignore[misc,assignment]
-
 from . import clipboard, config, mailbox, tmux
 from .notify import alert_router_webhook, discord_webhook, mac_notify
 from .relay import serve as serve_relay
@@ -211,9 +206,7 @@ def _ensure_clipboard_for_attach() -> list[str]:
     in_ssh = _in_ssh_session()
     stored_mode = data.get("selected_mode", "")
     # Re-setup if SSH context changed: SSH needs osc52; local needs native.
-    mode_mismatch = (in_ssh and stored_mode == "native") or (
-        not in_ssh and stored_mode == "osc52"
-    )
+    mode_mismatch = (in_ssh and stored_mode == "native") or (not in_ssh and stored_mode == "osc52")
     needs_setup = (
         not data.get("configured_on_disk")
         or data.get("loaded_in_tmux") is False
@@ -1008,64 +1001,103 @@ def _next_session_name(base: str) -> str:
     return f"{base} {int(time.time())}"
 
 
-def _path_completer(text: str, state: int) -> str | None:
-    """Readline completer for file/directory paths with ~ expansion."""
-    # Expand ~ to home directory for matching
-    expanded = os.path.expanduser(text) if text.startswith("~") else text
-    base, partial = os.path.split(expanded)
-    if not base:
-        base = "."
+def _read_line_cbreak(prompt: str, initial: str, fd: int) -> str | None:
+    """Read a line of input in cbreak mode. Returns None on Esc or Ctrl+C.
+
+    The caller is responsible for putting the terminal into cbreak mode.
+    Disables ISIG temporarily so Ctrl+C arrives as a byte rather than raising
+    SIGINT; also bypasses readline (libedit on macOS swallows Ctrl+C during
+    input()).
+    """
+    buf = list(initial)
+    saved_mode = termios.tcgetattr(fd)
+    no_isig = termios.tcgetattr(fd)
+    no_isig[3] &= ~termios.ISIG  # type: ignore[operator]
+    termios.tcsetattr(fd, termios.TCSANOW, no_isig)
+    sys.stdout.write("\033[?25h")  # show cursor
+    sys.stdout.flush()
+
+    def _draw() -> None:
+        sys.stdout.write("\r\033[K" + prompt + "".join(buf))
+        sys.stdout.flush()
+
+    _draw()
     try:
-        entries = os.listdir(base)
-    except OSError:
-        entries = []
-    matches = [e for e in entries if e.startswith(partial)]
-    if state >= len(matches):
-        return None
-    # Return full path (re-attach ~ prefix if used)
-    result = os.path.join(base, matches[state])
-    if text.startswith("~"):
-        home = str(Path.home())
-        if result.startswith(home):
-            result = "~" + result[len(home) :]
-    return result + "/" if os.path.isdir(result) else result
+        while True:
+            try:
+                ch = os.read(fd, 1)
+            except (KeyboardInterrupt, InterruptedError):
+                sys.stdout.write("\n")
+                return None
+            if not ch or ch == b"\x03":  # EOF or Ctrl+C
+                sys.stdout.write("\n")
+                return None
+            if ch in {b"\r", b"\n"}:
+                sys.stdout.write("\n")
+                return "".join(buf)
+            if ch == b"\x1b":
+                rlist, _, _ = select.select([fd], [], [], 0.05)
+                if not rlist:
+                    sys.stdout.write("\n")
+                    return None
+                os.read(fd, 8)  # drain arrow/function key sequence
+                continue
+            if ch in {b"\x7f", b"\x08"}:  # Backspace / Ctrl+H
+                if buf:
+                    buf.pop()
+                    _draw()
+                continue
+            if ch == b"\x15":  # Ctrl+U: clear line
+                buf.clear()
+                _draw()
+                continue
+            if ch == b"\x17":  # Ctrl+W: delete word
+                while buf and buf[-1] == " ":
+                    buf.pop()
+                while buf and buf[-1] != " ":
+                    buf.pop()
+                _draw()
+                continue
+            try:
+                s = ch.decode("utf-8")
+            except UnicodeDecodeError:
+                extra = os.read(fd, 3)
+                try:
+                    s = (ch + extra).decode("utf-8")
+                except UnicodeDecodeError:
+                    continue
+            if s.isprintable():
+                buf.extend(s)
+                _draw()
+    finally:
+        termios.tcsetattr(fd, termios.TCSANOW, saved_mode)
+        sys.stdout.write("\033[?25l")  # hide cursor
+        sys.stdout.flush()
 
 
-def _prompt_for_path(session: str, current: str, fd: int, old_termios: list) -> str | None:
+def _prompt_for_remap(mapping_name: str, current_dir: str, fd: int) -> tuple[str, str] | None:
+    """Prompt for new mapping name and path. Returns (name, path) or None on cancel."""
     print("\033[2J\033[H", end="")
-    print(f"Remap directory for: {session}")
-    print(f"Current: {current or '(unmapped)'}")
-    print("Enter new path (Tab: autocomplete, Enter: confirm, Esc/Ctrl+C: cancel):")
+    print(f"Remap: {mapping_name}")
+    print(f"Current path: {current_dir or '(unmapped)'}")
+    print("Esc or Ctrl+C to cancel. Enter to confirm. Ctrl+U clears, Ctrl+W deletes word.")
     print()
 
-    # Save readline state and configure for path completion
-    old_completer = None
-    old_delims = None
-    if readline is not None:
-        old_completer = readline.get_completer()
-        old_delims = readline.get_completer_delims()
-        readline.set_completer(_path_completer)
-        readline.set_completer_delims(" \t\n")  # Exclude / so paths complete component-wise
-        # macOS uses libedit which has different binding syntax than GNU readline
-        if "libedit" in (readline.__doc__ or ""):
-            readline.parse_and_bind("bind ^I rl_complete")
-        else:
-            readline.parse_and_bind("tab: complete")
-
-    termios.tcsetattr(fd, termios.TCSADRAIN, old_termios)
-    try:
-        path = input("> ").strip()
-    except (EOFError, KeyboardInterrupt):
-        print()
+    new_name = _read_line_cbreak("Name: ", mapping_name, fd)
+    if new_name is None:
         return None
-    finally:
-        tty.setcbreak(fd)
-        # Restore readline state
-        if readline is not None and old_completer is not None:
-            readline.set_completer(old_completer)
-            if old_delims is not None:
-                readline.set_completer_delims(old_delims)
-    return path if path else None
+    new_name = new_name.strip()
+    if not new_name:
+        return None
+
+    new_path = _read_line_cbreak("Path: ", current_dir, fd)
+    if new_path is None:
+        return None
+    new_path = new_path.strip()
+    if not new_path:
+        return None
+
+    return new_name, new_path
 
 
 def _auto_link_two_session_mailboxes() -> None:
@@ -1394,14 +1426,34 @@ def _choose_attach_session_interactive() -> str | None:
                     continue
                 mapping_name = str(rows[idx]["mapping_name"])
                 current_dir = str(rows[idx]["mapped_dir"])
-                new_path = _prompt_for_path(mapping_name, current_dir, fd, old)
-                if new_path:
+                result = _prompt_for_remap(mapping_name, current_dir, fd)
+                if result is None:
+                    notice = "remap cancelled"
+                    continue
+                new_name, new_path = result
+                expanded_path = str(Path(new_path).expanduser().resolve())
+                name_changed = new_name != mapping_name
+                path_changed = expanded_path != current_dir
+                if not name_changed and not path_changed:
+                    notice = "no changes"
+                    continue
+                if name_changed and new_name in config.load_mappings():
+                    notice = f"name already exists: {new_name}"
+                    continue
+                if name_changed:
+                    config.rename_mapping(mapping_name, new_name)
+                    with suppress(tmux.TmuxError):
+                        if tmux.has_session(mapping_name):
+                            tmux.rename_session(mapping_name, new_name)
+                    mapping_name = new_name
+                if path_changed:
                     config.set_mapping(mapping_name, new_path)
-                    rows = _rebuild_rows()
-                    for i, r in enumerate(rows):
-                        if r["mapping_name"] == mapping_name and r.get("row_type") != "child":
-                            idx = i
-                            break
+                rows = _rebuild_rows()
+                for i, r in enumerate(rows):
+                    if r["mapping_name"] == mapping_name and r.get("row_type") != "child":
+                        idx = i
+                        break
+                notice = "remapped"
             elif key == "new":
                 row = rows[idx]
                 if row["exit"] or not row["mapped_dir"]:

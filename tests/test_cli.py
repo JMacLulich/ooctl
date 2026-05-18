@@ -78,7 +78,7 @@ def test_clipboard_setup_parser_accepts_flags() -> None:
     assert args.reload is True
 
 
-def test_clipboard_setup_parser_defaults_to_scroll_mouse_mode() -> None:
+def test_clipboard_setup_parser_defaults_to_terminal_mouse_mode() -> None:
     parser = cli.build_parser()
     args = parser.parse_args(["clipboard", "setup"])
 
@@ -362,6 +362,7 @@ def test_cmd_attach_uses_interactive_choice_when_name_missing(monkeypatch) -> No
     monkeypatch.setattr(cli, "_ensure_clipboard_for_attach", lambda: [])
     monkeypatch.setattr(cli, "_clipboard_attach_hints", lambda: [])
     monkeypatch.setattr(cli.tmux, "has_session", lambda name: name == "filter2")
+    monkeypatch.setattr(cli.tmux, "list_windows", lambda session: ["main", "logs", "shell"])
 
     called: dict[str, str | None | bool] = {
         "focus": None,
@@ -448,6 +449,7 @@ def test_cmd_attach_passes_cc_flag_to_tmux(monkeypatch) -> None:
     monkeypatch.setattr(cli, "_ensure_clipboard_for_attach", lambda: [])
     monkeypatch.setattr(cli, "_clipboard_attach_hints", lambda: [])
     monkeypatch.setattr(cli.tmux, "has_session", lambda name: name == "filter2")
+    monkeypatch.setattr(cli.tmux, "list_windows", lambda session: ["main", "logs", "shell"])
 
     called: dict[str, str | None | bool] = {
         "focus": None,
@@ -483,6 +485,7 @@ def test_cmd_attach_prints_setup_hint_for_ssh_when_clipboard_unconfigured(
     monkeypatch, capsys
 ) -> None:
     monkeypatch.setattr(cli.tmux, "has_session", lambda name: name == "filter2")
+    monkeypatch.setattr(cli.tmux, "list_windows", lambda session: ["main", "logs", "shell"])
     monkeypatch.setattr(cli.config, "set_focus", lambda _name: None)
     monkeypatch.setattr(cli.config, "touch_recent_attach", lambda _name: None)
     monkeypatch.setattr(cli.tmux, "attach", lambda _name, control_mode=False: None)
@@ -518,6 +521,7 @@ def test_cmd_attach_prints_setup_hint_for_ssh_when_clipboard_unconfigured(
 
 def test_cmd_attach_prints_reload_hint_when_clipboard_not_loaded(monkeypatch, capsys) -> None:
     monkeypatch.setattr(cli.tmux, "has_session", lambda name: name == "filter2")
+    monkeypatch.setattr(cli.tmux, "list_windows", lambda session: ["main", "logs", "shell"])
     monkeypatch.setattr(cli.config, "set_focus", lambda _name: None)
     monkeypatch.setattr(cli.config, "touch_recent_attach", lambda _name: None)
     monkeypatch.setattr(cli.tmux, "attach", lambda _name, control_mode=False: None)
@@ -552,6 +556,7 @@ def test_cmd_attach_prints_terminal_fix_hint_when_osc52_emits_but_paste_fails(
     monkeypatch, capsys
 ) -> None:
     monkeypatch.setattr(cli.tmux, "has_session", lambda name: name == "filter2")
+    monkeypatch.setattr(cli.tmux, "list_windows", lambda session: ["main", "logs", "shell"])
     monkeypatch.setattr(cli.config, "set_focus", lambda _name: None)
     monkeypatch.setattr(cli.config, "touch_recent_attach", lambda _name: None)
     monkeypatch.setattr(cli.tmux, "attach", lambda _name, control_mode=False: None)
@@ -586,6 +591,7 @@ def test_cmd_attach_prints_terminal_fix_hint_when_osc52_emits_but_paste_fails(
 
 def test_cmd_attach_stays_quiet_when_clipboard_looks_healthy(monkeypatch, capsys) -> None:
     monkeypatch.setattr(cli.tmux, "has_session", lambda name: name == "filter2")
+    monkeypatch.setattr(cli.tmux, "list_windows", lambda session: ["main", "logs", "shell"])
     monkeypatch.setattr(cli.config, "set_focus", lambda _name: None)
     monkeypatch.setattr(cli.config, "touch_recent_attach", lambda _name: None)
     monkeypatch.setattr(cli.tmux, "attach", lambda _name, control_mode=False: None)
@@ -649,7 +655,7 @@ def test_attach_auto_setup_repairs_terminal_mouse_mode(monkeypatch) -> None:
             "reload_tmux": True,
             "bind_keys": "copy-mode-y",
             "follow_symlink": False,
-                "mouse_mode": "tmux",
+            "mouse_mode": "tmux",
         }
     ]
 

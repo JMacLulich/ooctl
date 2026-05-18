@@ -212,6 +212,18 @@ def _render_include(
                     'bind-key -n MouseDrag1Pane if-shell -F "#{mouse_any_flag}" '
                     '"send-keys -M" "copy-mode -M"'
                 ),
+                # Force wheel into copy-mode scroll even when the focused app
+                # (e.g. Claude Code TUI) sets mouse_any_flag; otherwise wheel
+                # events get routed into the app's input box.
+                (
+                    'bind-key -n WheelUpPane if-shell -F "#{pane_in_mode}" '
+                    '"send-keys -X -N 3 scroll-up" '
+                    '"copy-mode -e ; send-keys -X -N 3 scroll-up"'
+                ),
+                (
+                    'bind-key -n WheelDownPane if-shell -F "#{pane_in_mode}" '
+                    '"send-keys -X -N 3 scroll-down"'
+                ),
                 (
                     f"bind-key -T copy-mode-vi MouseDragEnd1Pane "
                     f'send-keys -X copy-pipe-and-cancel "{escaped}"'

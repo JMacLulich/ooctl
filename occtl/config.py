@@ -178,3 +178,14 @@ def set_mapping(name: str, path: str) -> None:
 def get_mapping(name: str) -> str | None:
     m = load_mappings()
     return m.get(name)
+
+
+def rename_mapping(old: str, new: str) -> bool:
+    if old == new:
+        return False
+    m = load_mappings()
+    if old not in m or new in m:
+        return False
+    m[new] = m.pop(old)
+    write_mappings(m)
+    return True

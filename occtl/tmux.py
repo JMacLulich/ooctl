@@ -145,8 +145,19 @@ def new_session(name: str, workdir: str) -> None:
     run(["tmux", "new-session", "-d", "-s", name, "-n", "main", "-c", workdir])
 
 
-def new_window(name: str, window: str, workdir: str) -> None:
-    run(["tmux", "new-window", "-t", name, "-n", window, "-c", workdir])
+def list_windows(session: str) -> list[str]:
+    try:
+        out = run(["tmux", "list-windows", "-t", session, "-F", "#{window_name}"])
+        return out.splitlines()
+    except TmuxError:
+        return []
+
+
+def new_window(name: str, window: str, workdir: str = "") -> None:
+    cmd = ["tmux", "new-window", "-t", name, "-n", window]
+    if workdir:
+        cmd.extend(["-c", workdir])
+    run(cmd)
 
 
 def send_keys(target: str, keys: list[str]) -> None:
@@ -194,6 +205,10 @@ def attach(name: str, control_mode: bool = False) -> None:
 
 def kill_session(name: str) -> None:
     run(["tmux", "kill-session", "-t", name])
+
+
+def rename_session(old: str, new: str) -> None:
+    run(["tmux", "rename-session", "-t", old, new])
 
 
 def kill_window(target: str) -> None:
