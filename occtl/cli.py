@@ -1883,6 +1883,10 @@ _occtl_tmux_sessions() {
   tmux list-sessions -F '#{session_name}' 2>/dev/null
 }
 
+_occtl_mappings() {
+  oc maps 2>/dev/null | awk -F '\t' '$0 != "(no mappings)" { print $1 }'
+}
+
 _occtl_complete() {
   local cur prev
   COMPREPLY=()
@@ -1892,6 +1896,18 @@ _occtl_complete() {
   if [[ $COMP_CWORD -eq 1 ]]; then
     COMPREPLY=( $(compgen -W "{cmds}" -- "$cur") )
     return 0
+  fi
+
+  if [[ "${COMP_WORDS[1]}" == "map" ]]; then
+    if [[ $COMP_CWORD -eq 2 ]]; then
+      COMPREPLY=( $(compgen -W "$(_occtl_mappings) $(_occtl_tmux_sessions)" -- "$cur") )
+      return 0
+    fi
+    if [[ $COMP_CWORD -eq 3 ]]; then
+      compopt -o filenames 2>/dev/null
+      COMPREPLY=( $(compgen -d -- "$cur") )
+      return 0
+    fi
   fi
 
   if [[ "${COMP_WORDS[1]}" == "clipboard" ]]; then
@@ -1971,10 +1987,12 @@ def _zsh_completion_script() -> str:
 
 _occtl() {
   local -a commands
+  local -a mappings
   local -a sessions
   commands=(
     __CMD_LIST__
   )
+  mappings=(${(f)"$(oc maps 2>/dev/null | awk -F '\t' '$0 != "(no mappings)" { print $1 }')"})
   sessions=(${(f)"$(tmux list-sessions -F '#{session_name}' 2>/dev/null)"})
 
   if (( CURRENT == 2 )); then
@@ -1983,6 +2001,14 @@ _occtl() {
   fi
 
   case "$words[2]" in
+    map)
+      if (( CURRENT == 3 )); then
+        compadd -a mappings
+        compadd -a sessions
+      elif (( CURRENT == 4 )); then
+        _files -/
+      fi
+      ;;
     clipboard)
       if (( CURRENT == 3 )); then
         compadd -- setup status verify uninstall
@@ -2051,8 +2077,14 @@ function __occtl_tmux_sessions
   tmux list-sessions -F '#{session_name}' 2>/dev/null
 end
 
+function __occtl_mappings
+  oc maps 2>/dev/null | awk -F '\t' '$0 != "(no mappings)" { print $1 }'
+end
+
 complete -c oc -f
 complete -c oc -n '__fish_use_subcommand' -a "{cmds}"
+complete -c oc -n "__fish_seen_subcommand_from map" -a "(__occtl_mappings) (__occtl_tmux_sessions)"
+complete -c oc -n "__fish_seen_subcommand_from map" -F
 complete -c oc -n "__fish_seen_subcommand_from attach focus kill" -a "(__occtl_tmux_sessions)"
 complete -c oc -n "__fish_seen_subcommand_from watch" -l name -r -a "(__occtl_tmux_sessions)"
 complete -c oc -n "__fish_seen_subcommand_from watch" -l idle-seconds -r

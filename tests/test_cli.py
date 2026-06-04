@@ -17,6 +17,9 @@ def test_cli_completion_bash_contains_commands() -> None:
     assert "complete -F _occtl_complete oc" in script
     assert "_occtl_tmux_sessions" in script
     assert "attach|focus|kill" in script
+    assert "_occtl_mappings" in script
+    assert 'COMP_WORDS[1]}" == "map"' in script
+    assert "compgen -d" in script
 
 
 def test_cli_completion_zsh_contains_compdef() -> None:
@@ -24,12 +27,16 @@ def test_cli_completion_zsh_contains_compdef() -> None:
     assert "#compdef oc" in script
     assert "compdef _occtl oc" in script
     assert "tmux list-sessions" in script
+    assert "oc maps" in script
+    assert "_files -/" in script
 
 
 def test_cli_completion_fish_contains_command() -> None:
     script = _fish_completion_script()
     assert "complete -c oc -f" in script
     assert "attach focus kill" in script
+    assert "__occtl_mappings" in script
+    assert '__fish_seen_subcommand_from map" -F' in script
 
 
 def test_map_command_allows_spaced_session_names() -> None:
