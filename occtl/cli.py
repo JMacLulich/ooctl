@@ -25,6 +25,7 @@ from .voice import parse_voice
 COMMANDS = (
     "map",
     "maps",
+    "rename",
     "new",
     "ensure",
     "ls",
@@ -290,6 +291,51 @@ def cmd_maps(_: argparse.Namespace) -> int:
         return 0
     for k in sorted(m.keys()):
         print(f"{k}\t{m[k]}")
+    return 0
+
+
+def cmd_rename(args: argparse.Namespace) -> int:
+    """Rename a mapping (and its live tmux session) old -> new.
+
+    Non-interactive equivalent of the attach-menu 'r' remap: renames the
+    mappings.toml key and, when present, the running tmux session. Optionally
+    remaps the directory with --path.
+    """
+    old = args.old
+    new = args.new
+    if old == new:
+        print(f"rename: names are identical: {old}", file=sys.stderr)
+        return 1
+
+    mappings = config.load_mappings()
+    has_mapping = old in mappings
+    has_tmux = tmux.has_session(old)
+    if not has_mapping and not has_tmux:
+        print(f"rename: no mapping or tmux session named: {old}", file=sys.stderr)
+        return 1
+    if new in mappings:
+        print(f"rename: mapping already exists: {new}", file=sys.stderr)
+        return 1
+    if tmux.has_session(new):
+        print(f"rename: tmux session already exists: {new}", file=sys.stderr)
+        return 1
+
+    changed = []
+    if has_mapping:
+        config.rename_mapping(old, new)
+        changed.append("mapping")
+    if has_tmux:
+        with suppress(tmux.TmuxError):
+            tmux.rename_session(old, new)
+            changed.append("tmux session")
+    if args.path is not None:
+        config.set_mapping(new, args.path)
+        if "mapping" not in changed:
+            changed.append("mapping")
+
+    target = config.get_mapping(new)
+    suffix = f" -> {target}" if target else ""
+    print(f"renamed: {old} => {new}{suffix} ({', '.join(changed)})")
     return 0
 
 
@@ -2129,6 +2175,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("maps", help="list mappings")
     sp.set_defaults(fn=cmd_maps)
+
+    sp = sub.add_parser("rename", help="rename a mapping (and its live tmux session)")
+    sp.add_argument("old", help="current mapping/session name")
+    sp.add_argument("new", help="new name")
+    sp.add_argument("--path", default=None, help="also remap the directory")
+    sp.set_defaults(fn=cmd_rename)
 
     sp = sub.add_parser("new", help="create session and start opencode (focuses)")
     sp.add_argument("name")

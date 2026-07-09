@@ -47,6 +47,53 @@ def test_map_command_allows_spaced_session_names() -> None:
     assert args.path == "/tmp/gig"
 
 
+def test_rename_command_parses_old_and_new() -> None:
+    parser = cli.build_parser()
+    args = parser.parse_args(["rename", "zoom rag", "neuma"])
+
+    assert args.old == "zoom rag"
+    assert args.new == "neuma"
+    assert args.path is None
+    assert args.fn is cli.cmd_rename
+
+
+def test_rename_command_accepts_path_flag() -> None:
+    parser = cli.build_parser()
+    args = parser.parse_args(["rename", "zoom rag", "neuma", "--path", "/tmp/neuma"])
+
+    assert args.path == "/tmp/neuma"
+
+
+def test_cmd_rename_renames_mapping(tmp_path: Path, monkeypatch) -> None:
+    config_dir = tmp_path / ".config" / "occtl"
+    monkeypatch.setattr(config, "CONFIG_DIR", config_dir)
+    monkeypatch.setattr(config, "MAPPINGS_FILE", config_dir / "mappings.toml")
+    monkeypatch.setattr(config, "STATE_FILE", config_dir / "state.json")
+    monkeypatch.setattr(config, "_ensured_dir", None)
+    monkeypatch.setattr(cli.tmux, "has_session", lambda name: False)
+
+    config.set_mapping("zoom rag", str(tmp_path / "zoom"))
+    rc = cli.cmd_rename(argparse.Namespace(old="zoom rag", new="neuma", path=None))
+
+    assert rc == 0
+    mappings = config.load_mappings()
+    assert "zoom rag" not in mappings
+    assert "neuma" in mappings
+
+
+def test_cmd_rename_rejects_unknown_name(tmp_path: Path, monkeypatch) -> None:
+    config_dir = tmp_path / ".config" / "occtl"
+    monkeypatch.setattr(config, "CONFIG_DIR", config_dir)
+    monkeypatch.setattr(config, "MAPPINGS_FILE", config_dir / "mappings.toml")
+    monkeypatch.setattr(config, "STATE_FILE", config_dir / "state.json")
+    monkeypatch.setattr(config, "_ensured_dir", None)
+    monkeypatch.setattr(cli.tmux, "has_session", lambda name: False)
+
+    rc = cli.cmd_rename(argparse.Namespace(old="missing", new="neuma", path=None))
+
+    assert rc == 1
+
+
 def test_attach_command_name_is_optional() -> None:
     parser = cli.build_parser()
     args = parser.parse_args(["attach"])
