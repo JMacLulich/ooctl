@@ -63,6 +63,14 @@ STALL_PATTERNS = (
     r"spawning planner\.{0,3}",
 )
 
+AGENT_SPECS: dict[str, dict[str, str]] = {
+    "claude": {"label": "Rig A", "runtime": "claude-code", "command": "claude"},
+    "codex": {"label": "Rig B", "runtime": "codex", "command": "codex"},
+    "opencode": {"label": "Rig C", "runtime": "opencode", "command": "opencode"},
+}
+
+SHELL_COMMANDS = {"bash", "fish", "sh", "zsh", "-bash", "-fish", "-sh", "-zsh", "login"}
+
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 
@@ -339,6 +347,12 @@ def cmd_rename(args: argparse.Namespace) -> int:
     return 0
 
 
+def _create_project_session(name: str, workdir: str) -> None:
+    tmux.new_session(name, workdir)
+    tmux.new_window(name, "logs", workdir)
+    tmux.new_window(name, "shell", workdir)
+
+
 def cmd_new(args: argparse.Namespace) -> int:
     name = args.name
     if tmux.has_session(name):
@@ -355,9 +369,7 @@ def cmd_new(args: argparse.Namespace) -> int:
         print(f"Mapped directory does not exist: {workdir}")
         return 1
 
-    tmux.new_session(name, workdir)
-    tmux.new_window(name, "logs", workdir)
-    tmux.new_window(name, "shell", workdir)
+    _create_project_session(name, workdir)
 
     config.set_focus(name)
     print(f"created+focused: {name}\tdir={workdir}")
@@ -454,6 +466,137 @@ def cmd_enter(args: argparse.Namespace) -> int:
     return 0
 
 
+def _workspace_for_session(session: str) -> str | None:
+    mapped = config.get_mapping(session)
+    if mapped:
+        return str(Path(mapped).expanduser().resolve())
+
+    for row in tmux.list_sessions_with_paths():
+        if str(row.get("name") or "") == session:
+            path = str(row.get("path") or "").strip()
+            if path:
+                return str(Path(path).expanduser().resolve())
+    return None
+
+
+def _runtime_window_name(runtime: str, suffix: int | None = None) -> str:
+    base = f"agent-{runtime}"
+    return base if suffix is None else f"{base}-{suffix}"
+
+
+def _runtime_command_is_running(runtime: str, command: str) -> bool:
+    command = command.strip().lower()
+    if command in {runtime, AGENT_SPECS[runtime]["command"]}:
+        return True
+    # Codex and OpenCode can present as node while their TUI is foreground.
+    return runtime in {"codex", "opencode"} and command == "node"
+
+
+def _ensure_agent_window(session: str, workspace: str, runtime: str) -> str:
+    spec = AGENT_SPECS[runtime]
+    details = tmux.list_window_details().get(session, {})
+    windows = details.get("window_list", [])
+    by_name = {
+        str(window.get("name") or ""): window
+        for window in windows
+        if isinstance(window, dict) and str(window.get("name") or "")
+    }
+
+    # Reuse an agent that was started before `oc attach --agent` was added,
+    # even if it lives in the conventional `shell` window.
+    for window in windows:
+        if not isinstance(window, dict):
+            continue
+        command = str(window.get("command") or "")
+        if command and _runtime_command_is_running(runtime, command):
+            return str(window["name"])
+
+    for suffix in [None, 2, 3, 4, 5]:
+        window_name = _runtime_window_name(runtime, suffix)
+        existing = by_name.get(window_name)
+        if existing is None:
+            tmux.new_window(session, window_name, workspace)
+            tmux.send_keys(f"{session}:{window_name}", [spec["command"], "Enter"])
+            return window_name
+
+        command = str(existing.get("command") or "")
+        if _runtime_command_is_running(runtime, command):
+            return window_name
+        if command.lower() in SHELL_COMMANDS:
+            tmux.send_keys(f"{session}:{window_name}", [spec["command"], "Enter"])
+            return window_name
+
+    raise tmux.TmuxError(f"no available {runtime} agent window in tmux session '{session}'")
+
+
+def _linked_session_for_label(workspace: str, label: str) -> str | None:
+    for target, linked_label in mailbox.linked_targets(workspace).items():
+        if linked_label.casefold() != label.casefold():
+            continue
+        session = _session_from_tmux_target(target)
+        if tmux.has_session(session):
+            return session
+    return None
+
+
+def _ensure_agent_session(session: str, runtime: str) -> str:
+    spec = AGENT_SPECS[runtime]
+    workspace = _workspace_for_session(session)
+    if not workspace:
+        raise mailbox.MailboxError(
+            f"session '{session}' has no mapped workspace; run `oc map {session} /path/to/project`"
+        )
+
+    mailbox.ensure_mailbox(workspace)
+    linked_session = _linked_session_for_label(workspace, spec["label"])
+    mapped_path = config.get_mapping(session)
+    is_project_name = bool(
+        mapped_path and Path(mapped_path).expanduser().resolve() == Path(workspace)
+    )
+
+    # Reusing the project mapping name selects an existing role session when
+    # possible, so callers do not need to know generated names such as
+    # "lullafi 2" and "lullafi 3".
+    if is_project_name and linked_session:
+        return linked_session
+    if not is_project_name or not tmux.has_session(session):
+        return session
+
+    linked_targets = mailbox.linked_targets(workspace)
+    session_already_has_role = any(
+        _session_from_tmux_target(target) == session for target in linked_targets
+    )
+    if session_already_has_role:
+        child = _next_session_name(session)
+        _create_project_session(child, workspace)
+        print(f"created:\t{child}")
+        return child
+    return session
+
+
+def _route_agent(session: str, runtime: str) -> str:
+    spec = AGENT_SPECS[runtime]
+    workspace = _workspace_for_session(session)
+    if not workspace:
+        raise mailbox.MailboxError(
+            f"session '{session}' has no mapped workspace; run `oc map {session} /path/to/project`"
+        )
+
+    mailbox.ensure_mailbox(workspace)
+    _set_rig_session_env(session, spec["label"], workspace)
+    window = _ensure_agent_window(session, workspace, runtime)
+    # Set the session environment before creating the window so a newly
+    # spawned process inherits the correct identity and workspace.
+    mailbox.link_rig(
+        workspace=workspace,
+        label=spec["label"],
+        session=session,
+        runtime=spec["runtime"],
+        window=window,
+    )
+    return f"{session}:{window}"
+
+
 def cmd_attach(args: argparse.Namespace) -> int:
     target = args.name or _choose_attach_session_interactive()
     if not target:
@@ -469,6 +612,16 @@ def cmd_attach(args: argparse.Namespace) -> int:
         else:
             print(f"session not found: {session}")
             return 1
+
+    runtime = getattr(args, "runtime", None)
+    if runtime:
+        try:
+            session = _ensure_agent_session(session, runtime)
+            target = _route_agent(session, runtime)
+        except (mailbox.MailboxError, tmux.TmuxError) as e:
+            print(str(e))
+            return 1
+        print(f"routed:\t{AGENT_SPECS[runtime]['label']} -> {target}")
 
     config.set_focus(session)
     config.touch_recent_attach(session)
@@ -2007,6 +2160,9 @@ _occtl_complete() {
     attach|focus|kill)
       COMPREPLY=( $(compgen -W "$(_occtl_tmux_sessions)" -- "$cur") )
       ;;
+    --agent|--runtime)
+      COMPREPLY=( $(compgen -W "claude codex opencode" -- "$cur") )
+      ;;
     watch)
       COMPREPLY+=( $(compgen -W "--name --idle-seconds --capture-lines" -- "$cur") )
       ;;
@@ -2088,7 +2244,14 @@ _occtl() {
         compadd -- $sessions --rig --runtime --workspace --window
       fi
       ;;
-    attach|focus|kill)
+    attach)
+      if [[ "$words[CURRENT-1]" == "--agent" || "$words[CURRENT-1]" == "--runtime" ]]; then
+        compadd -- claude codex opencode
+      else
+        compadd -a sessions -- --agent --runtime --cc
+      fi
+      ;;
+    focus|kill)
       compadd -a sessions
       ;;
     watch)
@@ -2132,6 +2295,9 @@ complete -c oc -n '__fish_use_subcommand' -a "{cmds}"
 complete -c oc -n "__fish_seen_subcommand_from map" -a "(__occtl_mappings) (__occtl_tmux_sessions)"
 complete -c oc -n "__fish_seen_subcommand_from map" -F
 complete -c oc -n "__fish_seen_subcommand_from attach focus kill" -a "(__occtl_tmux_sessions)"
+complete -c oc -n "__fish_seen_subcommand_from attach" -l agent -r -a "claude codex opencode"
+complete -c oc -n "__fish_seen_subcommand_from attach" -l runtime -r -a "claude codex opencode"
+complete -c oc -n "__fish_seen_subcommand_from attach" -l cc
 complete -c oc -n "__fish_seen_subcommand_from watch" -l name -r -a "(__occtl_tmux_sessions)"
 complete -c oc -n "__fish_seen_subcommand_from watch" -l idle-seconds -r
 complete -c oc -n "__fish_seen_subcommand_from watch" -l capture-lines -r
@@ -2182,7 +2348,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--path", default=None, help="also remap the directory")
     sp.set_defaults(fn=cmd_rename)
 
-    sp = sub.add_parser("new", help="create session and start opencode (focuses)")
+    sp = sub.add_parser(
+        "new", help="create a project tmux session (use attach --agent to launch an agent)"
+    )
     sp.add_argument("name")
     sp.set_defaults(fn=cmd_new)
 
@@ -2214,8 +2382,18 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--session", default=None)
     sp.set_defaults(fn=cmd_enter)
 
-    sp = sub.add_parser("attach", help="attach to a session (interactive picker when omitted)")
+    sp = sub.add_parser(
+        "attach",
+        help="attach to a session; optionally launch and route Claude, Codex, or OpenCode",
+    )
     sp.add_argument("name", nargs="?", default=None)
+    sp.add_argument(
+        "--agent",
+        "--runtime",
+        dest="runtime",
+        choices=tuple(AGENT_SPECS),
+        help="launch this agent in a dedicated window and route its mailbox rig",
+    )
     sp.add_argument(
         "--cc",
         action="store_true",

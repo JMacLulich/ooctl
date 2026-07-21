@@ -62,7 +62,7 @@ oc maps
 
 ### Create/ensure sessions
 
-Create and start OpenCode:
+Create a project tmux session:
 
 ```bash
 oc new infra
@@ -83,6 +83,9 @@ oc say "run tests and summarize failures"  # send text to focused session
 oc enter                 # send Enter to focused session
 oc status                # focus + mapped dir + idle seconds
 oc attach infra          # interactive attach (best from Termius)
+oc attach infra --agent claude     # launch + route Claude, then attach
+oc attach infra --agent codex      # launch + route Codex, then attach
+oc attach infra --agent opencode   # launch + route OpenCode, then attach
 oc kill infra            # terminate a session (or: oc kill for focused)
 ```
 
@@ -104,6 +107,24 @@ auto-creates `.rig-mailbox` when missing and auto-links them as Rig A/Rig B
 when the TUI refreshes. This covers the common case where you create two
 `zoom-mvps` or `cash-claw` sessions and want them tied together without
 remembering any setup commands.
+
+For the three-rig setup, use agent-aware attach. It creates a dedicated
+`agent-claude`, `agent-codex`, or `agent-opencode` window, starts the selected
+CLI once, sets `RIG_NAME`/`RIG_WORKSPACE`, creates the project mailbox when
+needed, and writes the stable tmux target into `rigs.toml`:
+
+```bash
+oc attach lullafi --agent claude
+oc attach lullafi --agent codex
+oc attach lullafi --agent opencode
+```
+
+The agent flag can also be written as `--runtime`. Repeating the command is
+safe: an existing matching role/session is reused, and an unassigned role gets
+the next sibling session automatically, rather than launching a second copy.
+The role defaults are Claude → Rig A, Codex → Rig B, and OpenCode → Rig C. The
+normal `oc attach` picker remains available when you only want to attach
+without changing the runtime or mailbox routing.
 
 The standalone wizard also exists:
 

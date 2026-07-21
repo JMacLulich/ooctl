@@ -43,9 +43,13 @@ def _installer_path() -> str | None:
     if discovered:
         return discovered
 
-    candidate = Path.home() / "dev/system-playbooks/bin/install-rig-mailbox"
-    if candidate.exists():
-        return str(candidate)
+    for relative_path in (
+        "Development/system-playbooks/bin/install-rig-mailbox",
+        "dev/system-playbooks/bin/install-rig-mailbox",
+    ):
+        candidate = Path.home() / relative_path
+        if candidate.exists():
+            return str(candidate)
     return None
 
 
@@ -110,8 +114,17 @@ def _replace_section(text: str, key: str, section: list[str]) -> str:
             out.extend(section)
             replaced = True
             i += 1
+            preserved: list[str] = []
             while i < len(lines) and not lines[i].lstrip().startswith("["):
+                line = lines[i]
+                field = line.split("=", 1)[0].strip() if "=" in line else ""
+                if (
+                    field not in {"runtime", "notifier", "tmux_target", "workspace", "session_name"}
+                    and line.strip()
+                ):
+                    preserved.append(line)
                 i += 1
+            out.extend(preserved)
             continue
         out.append(lines[i])
         i += 1

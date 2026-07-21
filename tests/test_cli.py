@@ -101,6 +101,16 @@ def test_attach_command_name_is_optional() -> None:
     assert args.name is None
 
 
+def test_attach_command_accepts_agent_runtime() -> None:
+    parser = cli.build_parser()
+
+    args = parser.parse_args(["attach", "lullafi", "--agent", "claude"])
+    assert args.runtime == "claude"
+
+    alias = parser.parse_args(["attach", "lullafi", "--runtime", "opencode"])
+    assert alias.runtime == "opencode"
+
+
 def test_attach_command_supports_cc_flag() -> None:
     parser = cli.build_parser()
     args = parser.parse_args(["attach", "--cc"])
@@ -170,6 +180,7 @@ def test_cmd_mailbox_link_updates_rigs_toml(tmp_path: Path, monkeypatch, capsys)
                 'runtime = "codex"',
                 'notifier = "applescript-iterm"',
                 'session_name = "old-title"',
+                'auto_review_to = "Rig A"',
                 "",
             ]
         ),
@@ -200,6 +211,7 @@ def test_cmd_mailbox_link_updates_rigs_toml(tmp_path: Path, monkeypatch, capsys)
     assert 'notifier = "tmux"' in text
     assert 'tmux_target = "cash-claw-rig-b:main"' in text
     assert "session_name" not in text
+    assert 'auto_review_to = "Rig A"' in text
     assert env_calls == [
         (
             "cash-claw-rig-b",
@@ -210,6 +222,115 @@ def test_cmd_mailbox_link_updates_rigs_toml(tmp_path: Path, monkeypatch, capsys)
         )
     ]
     assert "linked:\tRig B -> cash-claw-rig-b:main" in capsys.readouterr().out
+
+
+def test_route_agent_creates_window_sets_identity_and_links_mailbox(
+    monkeypatch, tmp_path: Path
+) -> None:
+    workspace = tmp_path / "cash-claw"
+    workspace.mkdir(parents=True)
+    (workspace / ".rig-mailbox").mkdir()
+
+    monkeypatch.setattr(cli.config, "get_mapping", lambda _name: None)
+    monkeypatch.setattr(
+        cli.tmux,
+        "list_sessions_with_paths",
+        lambda: [{"name": "cash-claw-3", "path": str(workspace)}],
+    )
+    monkeypatch.setattr(
+        cli.tmux,
+        "list_window_details",
+        lambda: {
+            "cash-claw-3": {
+                "window_list": [{"name": "main", "command": "zsh"}],
+            }
+        },
+    )
+    monkeypatch.setattr(cli.mailbox, "ensure_mailbox", lambda _path: workspace / ".rig-mailbox")
+    env_calls: list[tuple[str, str, str]] = []
+    monkeypatch.setattr(
+        cli,
+        "_set_rig_session_env",
+        lambda session, label, path: env_calls.append((session, label, str(path))),
+    )
+    created: list[tuple[str, str, str]] = []
+    monkeypatch.setattr(
+        cli.tmux,
+        "new_window",
+        lambda session, window, workdir: created.append((session, window, workdir)),
+    )
+    sent: list[tuple[str, list[str]]] = []
+    monkeypatch.setattr(cli.tmux, "send_keys", lambda target, keys: sent.append((target, keys)))
+    links: list[dict[str, str]] = []
+    monkeypatch.setattr(
+        cli.mailbox,
+        "link_rig",
+        lambda **kwargs: links.append(kwargs) or workspace / ".rig-mailbox" / "rigs.toml",
+    )
+
+    target = cli._route_agent("cash-claw-3", "opencode")
+
+    assert target == "cash-claw-3:agent-opencode"
+    assert env_calls == [("cash-claw-3", "Rig C", str(workspace))]
+    assert created == [("cash-claw-3", "agent-opencode", str(workspace))]
+    assert sent == [("cash-claw-3:agent-opencode", ["opencode", "Enter"])]
+    assert links == [
+        {
+            "workspace": str(workspace),
+            "label": "Rig C",
+            "session": "cash-claw-3",
+            "runtime": "opencode",
+            "window": "agent-opencode",
+        }
+    ]
+
+
+def test_ensure_agent_session_creates_next_project_sibling_for_new_role(
+    monkeypatch, tmp_path: Path, capsys
+) -> None:
+    workspace = tmp_path / "cash-claw"
+    mailbox_dir = workspace / ".rig-mailbox"
+    mailbox_dir.mkdir(parents=True)
+    (mailbox_dir / "rigs.toml").write_text(
+        '[rigs."rig-a"]\n\nruntime = "claude-code"\ntmux_target = "cash-claw:agent-claude"\n',
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        cli.config, "get_mapping", lambda name: str(workspace) if name == "cash-claw" else None
+    )
+    monkeypatch.setattr(cli.mailbox, "ensure_mailbox", lambda _path: mailbox_dir)
+    monkeypatch.setattr(cli.tmux, "has_session", lambda name: name == "cash-claw")
+    created: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        cli, "_create_project_session", lambda name, path: created.append((name, path))
+    )
+
+    session = cli._ensure_agent_session("cash-claw", "opencode")
+
+    assert session == "cash-claw 2"
+    assert created == [("cash-claw 2", str(workspace.resolve()))]
+    assert "created:\tcash-claw 2" in capsys.readouterr().out
+
+
+def test_ensure_agent_session_reuses_role_session_from_project_name(
+    monkeypatch, tmp_path: Path
+) -> None:
+    workspace = tmp_path / "cash-claw"
+    mailbox_dir = workspace / ".rig-mailbox"
+    mailbox_dir.mkdir(parents=True)
+    (mailbox_dir / "rigs.toml").write_text(
+        '[rigs."rig-c"]\n\nruntime = "opencode"\ntmux_target = "cash-claw 3:agent-opencode"\n',
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        cli.config, "get_mapping", lambda name: str(workspace) if name == "cash-claw" else None
+    )
+    monkeypatch.setattr(cli.mailbox, "ensure_mailbox", lambda _path: mailbox_dir)
+    monkeypatch.setattr(cli.tmux, "has_session", lambda name: name in {"cash-claw", "cash-claw 3"})
+
+    assert cli._ensure_agent_session("cash-claw", "opencode") == "cash-claw 3"
 
 
 def test_cmd_mailbox_link_auto_targets_agent_window(tmp_path: Path, monkeypatch, capsys) -> None:
