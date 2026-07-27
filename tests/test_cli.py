@@ -101,11 +101,123 @@ def test_attach_command_name_is_optional() -> None:
     assert args.name is None
 
 
+def test_attach_command_accepts_agent_runtime() -> None:
+    parser = cli.build_parser()
+
+    args = parser.parse_args(["attach", "lullafi", "--agent", "claude"])
+    assert args.runtime == "claude"
+
+    alias = parser.parse_args(["attach", "lullafi", "--runtime", "opencode"])
+    assert alias.runtime == "opencode"
+
+
 def test_attach_command_supports_cc_flag() -> None:
     parser = cli.build_parser()
     args = parser.parse_args(["attach", "--cc"])
 
     assert args.cc is True
+
+
+def test_attach_command_accepts_existing_project_role() -> None:
+    parser = cli.build_parser()
+
+    args = parser.parse_args(["attach", "lullafi", "--role", "rig-b"])
+
+    assert args.name == "lullafi"
+    assert args.role == "rig-b"
+
+
+def test_session_inventory_uses_mailbox_roles_and_studio_naming_fallback(
+    monkeypatch, tmp_path: Path
+) -> None:
+    lullafi = tmp_path / "lullafi"
+    monkeypatch.setattr(cli.config, "load_mappings", lambda: {"lullafi": str(lullafi)})
+    monkeypatch.setattr(
+        cli.mailbox,
+        "linked_targets",
+        lambda _workspace: {
+            "studio-lullafi-a:main": "Rig A",
+            "studio-lullafi-b:main": "Rig B",
+        },
+    )
+    monkeypatch.setattr(
+        cli.tmux,
+        "list_sessions_with_paths",
+        lambda: [
+            {
+                "name": "studio-lullafi-a",
+                "attached": False,
+                "windows": 1,
+                "path": str(lullafi),
+            },
+            {
+                "name": "studio-lullafi-b",
+                "attached": False,
+                "windows": 1,
+                "path": str(tmp_path / "lullafi-rig-b"),
+            },
+            {
+                "name": "studio-lullafi-c",
+                "attached": False,
+                "windows": 1,
+                "path": str(tmp_path / "lullafi-rig-c"),
+            },
+            {
+                "name": "studio-lullafi-loop",
+                "attached": False,
+                "windows": 1,
+                "path": str(tmp_path),
+            },
+        ],
+    )
+
+    inventory = cli._session_inventory()
+    roles = {str(row["name"]): row.get("role") for row in inventory}
+    projects = {str(row["name"]): row.get("project_name") for row in inventory}
+
+    assert roles == {
+        "studio-lullafi-a": "Rig A",
+        "studio-lullafi-b": "Rig B",
+        "studio-lullafi-c": "Rig C",
+        "studio-lullafi-loop": "Loop Controller",
+    }
+    assert all(projects[name] == "lullafi" for name in projects)
+
+
+def test_project_role_attach_does_not_create_a_new_session(monkeypatch, capsys) -> None:
+    parser = cli.build_parser()
+    args = parser.parse_args(["attach", "lullafi", "--role", "rig-c"])
+    called: dict[str, object] = {"attached": None, "created": False}
+
+    monkeypatch.setattr(
+        cli.config,
+        "get_mapping",
+        lambda name: "/tmp/lullafi" if name == "lullafi" else None,
+    )
+    monkeypatch.setattr(cli, "_resolve_project_role", lambda _project, _role: "studio-lullafi-c")
+    monkeypatch.setattr(
+        cli.tmux,
+        "has_session",
+        lambda name: name == "studio-lullafi-c",
+    )
+    monkeypatch.setattr(cli, "_ensure_clipboard_for_attach", lambda: [])
+    monkeypatch.setattr(cli, "_clipboard_attach_hints", lambda: [])
+    monkeypatch.setattr(cli.config, "set_focus", lambda _name: None)
+    monkeypatch.setattr(cli.config, "touch_recent_attach", lambda _name: None)
+    monkeypatch.setattr(
+        cli.tmux,
+        "attach",
+        lambda target, control_mode=False: called.update(attached=(target, control_mode)),
+    )
+    monkeypatch.setattr(
+        cli,
+        "cmd_new",
+        lambda _args: called.update(created=True) or 0,
+    )
+
+    assert cli.cmd_attach(args) == 0
+    assert called == {"attached": ("studio-lullafi-c", False), "created": False}
+    assert "routed" not in capsys.readouterr().out
 
 
 def test_clipboard_setup_parser_accepts_flags() -> None:
@@ -170,6 +282,7 @@ def test_cmd_mailbox_link_updates_rigs_toml(tmp_path: Path, monkeypatch, capsys)
                 'runtime = "codex"',
                 'notifier = "applescript-iterm"',
                 'session_name = "old-title"',
+                'auto_review_to = "Rig A"',
                 "",
             ]
         ),
@@ -200,6 +313,7 @@ def test_cmd_mailbox_link_updates_rigs_toml(tmp_path: Path, monkeypatch, capsys)
     assert 'notifier = "tmux"' in text
     assert 'tmux_target = "cash-claw-rig-b:main"' in text
     assert "session_name" not in text
+    assert 'auto_review_to = "Rig A"' in text
     assert env_calls == [
         (
             "cash-claw-rig-b",
@@ -210,6 +324,115 @@ def test_cmd_mailbox_link_updates_rigs_toml(tmp_path: Path, monkeypatch, capsys)
         )
     ]
     assert "linked:\tRig B -> cash-claw-rig-b:main" in capsys.readouterr().out
+
+
+def test_route_agent_creates_window_sets_identity_and_links_mailbox(
+    monkeypatch, tmp_path: Path
+) -> None:
+    workspace = tmp_path / "cash-claw"
+    workspace.mkdir(parents=True)
+    (workspace / ".rig-mailbox").mkdir()
+
+    monkeypatch.setattr(cli.config, "get_mapping", lambda _name: None)
+    monkeypatch.setattr(
+        cli.tmux,
+        "list_sessions_with_paths",
+        lambda: [{"name": "cash-claw-3", "path": str(workspace)}],
+    )
+    monkeypatch.setattr(
+        cli.tmux,
+        "list_window_details",
+        lambda: {
+            "cash-claw-3": {
+                "window_list": [{"name": "main", "command": "zsh"}],
+            }
+        },
+    )
+    monkeypatch.setattr(cli.mailbox, "ensure_mailbox", lambda _path: workspace / ".rig-mailbox")
+    env_calls: list[tuple[str, str, str]] = []
+    monkeypatch.setattr(
+        cli,
+        "_set_rig_session_env",
+        lambda session, label, path: env_calls.append((session, label, str(path))),
+    )
+    created: list[tuple[str, str, str]] = []
+    monkeypatch.setattr(
+        cli.tmux,
+        "new_window",
+        lambda session, window, workdir: created.append((session, window, workdir)),
+    )
+    sent: list[tuple[str, list[str]]] = []
+    monkeypatch.setattr(cli.tmux, "send_keys", lambda target, keys: sent.append((target, keys)))
+    links: list[dict[str, str]] = []
+    monkeypatch.setattr(
+        cli.mailbox,
+        "link_rig",
+        lambda **kwargs: links.append(kwargs) or workspace / ".rig-mailbox" / "rigs.toml",
+    )
+
+    target = cli._route_agent("cash-claw-3", "opencode")
+
+    assert target == "cash-claw-3:agent-opencode"
+    assert env_calls == [("cash-claw-3", "Rig C", str(workspace))]
+    assert created == [("cash-claw-3", "agent-opencode", str(workspace))]
+    assert sent == [("cash-claw-3:agent-opencode", ["opencode", "Enter"])]
+    assert links == [
+        {
+            "workspace": str(workspace),
+            "label": "Rig C",
+            "session": "cash-claw-3",
+            "runtime": "opencode",
+            "window": "agent-opencode",
+        }
+    ]
+
+
+def test_ensure_agent_session_creates_next_project_sibling_for_new_role(
+    monkeypatch, tmp_path: Path, capsys
+) -> None:
+    workspace = tmp_path / "cash-claw"
+    mailbox_dir = workspace / ".rig-mailbox"
+    mailbox_dir.mkdir(parents=True)
+    (mailbox_dir / "rigs.toml").write_text(
+        '[rigs."rig-a"]\n\nruntime = "claude-code"\ntmux_target = "cash-claw:agent-claude"\n',
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        cli.config, "get_mapping", lambda name: str(workspace) if name == "cash-claw" else None
+    )
+    monkeypatch.setattr(cli.mailbox, "ensure_mailbox", lambda _path: mailbox_dir)
+    monkeypatch.setattr(cli.tmux, "has_session", lambda name: name == "cash-claw")
+    created: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        cli, "_create_project_session", lambda name, path: created.append((name, path))
+    )
+
+    session = cli._ensure_agent_session("cash-claw", "opencode")
+
+    assert session == "cash-claw 2"
+    assert created == [("cash-claw 2", str(workspace.resolve()))]
+    assert "created:\tcash-claw 2" in capsys.readouterr().out
+
+
+def test_ensure_agent_session_reuses_role_session_from_project_name(
+    monkeypatch, tmp_path: Path
+) -> None:
+    workspace = tmp_path / "cash-claw"
+    mailbox_dir = workspace / ".rig-mailbox"
+    mailbox_dir.mkdir(parents=True)
+    (mailbox_dir / "rigs.toml").write_text(
+        '[rigs."rig-c"]\n\nruntime = "opencode"\ntmux_target = "cash-claw 3:agent-opencode"\n',
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        cli.config, "get_mapping", lambda name: str(workspace) if name == "cash-claw" else None
+    )
+    monkeypatch.setattr(cli.mailbox, "ensure_mailbox", lambda _path: mailbox_dir)
+    monkeypatch.setattr(cli.tmux, "has_session", lambda name: name in {"cash-claw", "cash-claw 3"})
+
+    assert cli._ensure_agent_session("cash-claw", "opencode") == "cash-claw 3"
 
 
 def test_cmd_mailbox_link_auto_targets_agent_window(tmp_path: Path, monkeypatch, capsys) -> None:
@@ -418,7 +641,7 @@ def test_cmd_attach_uses_interactive_choice_when_name_missing(monkeypatch) -> No
     monkeypatch.setattr(cli.tmux, "has_session", lambda name: name == "filter2")
     monkeypatch.setattr(cli.tmux, "list_windows", lambda session: ["main", "logs", "shell"])
 
-    called: dict[str, str | None | bool] = {
+    called: dict[str, str | bool | None] = {
         "focus": None,
         "attach": None,
         "recent": None,
@@ -468,7 +691,7 @@ def test_cmd_attach_starts_mapped_session_when_not_running(monkeypatch) -> None:
     monkeypatch.setattr(cli.tmux, "has_session", _has_session)
     monkeypatch.setattr(cli, "cmd_new", _cmd_new)
 
-    called: dict[str, str | None | bool] = {
+    called: dict[str, str | bool | None] = {
         "focus": None,
         "attach": None,
         "recent": None,
@@ -505,7 +728,7 @@ def test_cmd_attach_passes_cc_flag_to_tmux(monkeypatch) -> None:
     monkeypatch.setattr(cli.tmux, "has_session", lambda name: name == "filter2")
     monkeypatch.setattr(cli.tmux, "list_windows", lambda session: ["main", "logs", "shell"])
 
-    called: dict[str, str | None | bool] = {
+    called: dict[str, str | bool | None] = {
         "focus": None,
         "attach": None,
         "recent": None,
@@ -767,7 +990,7 @@ def test_menu_row_handles_ansi_without_border_shift() -> None:
 
 
 def test_version_string_appears_in_version_constant() -> None:
-    assert cli._VERSION == "0.8.0"
+    assert cli._VERSION == "0.11.2"
 
 
 def test_read_menu_key_recognizes_csi_arrow_sequences() -> None:
