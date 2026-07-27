@@ -1232,7 +1232,7 @@ def _window_badge(row: dict[str, object]) -> str:
     return " ".join(parts)
 
 
-_VERSION = "0.11.0"
+_VERSION = "0.11.2"
 
 # Visible width of the status indicator ("● running" / "○ stopped")
 _STATUS_W = 9
