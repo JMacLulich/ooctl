@@ -69,6 +69,33 @@ AGENT_SPECS: dict[str, dict[str, str]] = {
     "opencode": {"label": "Rig C", "runtime": "opencode", "command": "opencode"},
 }
 
+ROLE_ALIASES = {
+    "a": "Rig A",
+    "rig-a": "Rig A",
+    "rig a": "Rig A",
+    "head": "Rig A",
+    "claude": "Rig A",
+    "b": "Rig B",
+    "rig-b": "Rig B",
+    "rig b": "Rig B",
+    "codex": "Rig B",
+    "c": "Rig C",
+    "rig-c": "Rig C",
+    "rig c": "Rig C",
+    "opencode": "Rig C",
+    "loop": "Loop Controller",
+    "controller": "Loop Controller",
+    "loop-controller": "Loop Controller",
+    "loop controller": "Loop Controller",
+}
+
+ROLE_ORDER = {
+    "Rig A": 0,
+    "Rig B": 1,
+    "Rig C": 2,
+    "Loop Controller": 3,
+}
+
 SHELL_COMMANDS = {"bash", "fish", "sh", "zsh", "-bash", "-fish", "-sh", "-zsh", "login"}
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
@@ -385,7 +412,10 @@ def cmd_ensure(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_ls(_: argparse.Namespace) -> int:
+def cmd_ls(args: argparse.Namespace) -> int:
+    if getattr(args, "details", False):
+        _print_session_inventory(_session_inventory())
+        return 0
     rows = tmux.list_sessions()
     if not rows:
         print("(no tmux sessions)")
@@ -393,6 +423,165 @@ def cmd_ls(_: argparse.Namespace) -> int:
     for r in rows:
         print(f"{r['name']}\tattached={int(r['attached'])}\twindows={r['windows']}")
     return 0
+
+
+def _canonical_path(value: str) -> str:
+    try:
+        return str(Path(value).expanduser().resolve())
+    except Exception:
+        return value
+
+
+def _slug(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", value.lower())
+
+
+def _role_from_alias(value: str) -> str | None:
+    normalized = " ".join(value.strip().lower().replace("_", "-").split())
+    return ROLE_ALIASES.get(normalized) or ROLE_ALIASES.get(normalized.replace(" ", "-"))
+
+
+def _infer_project_role(
+    session: str, mapping_name: str, mapped_dir: str
+) -> str | None:
+    session_slug = _slug(session)
+    project_slugs = {_slug(mapping_name), _slug(Path(mapped_dir).name)}
+    project_slugs.discard("")
+    endings = (
+        ("loop", "Loop Controller"),
+        ("rig a", "Rig A"),
+        ("riga", "Rig A"),
+        ("a", "Rig A"),
+        ("rig b", "Rig B"),
+        ("rigb", "Rig B"),
+        ("b", "Rig B"),
+        ("rig c", "Rig C"),
+        ("rigc", "Rig C"),
+        ("c", "Rig C"),
+    )
+    for project_slug in project_slugs:
+        for ending, role in endings:
+            ending_slug = _slug(ending)
+            if session_slug.endswith(project_slug + ending_slug):
+                return role
+    return None
+
+
+def _session_inventory() -> list[dict[str, object]]:
+    """Return live sessions annotated with project and rig role metadata.
+
+    Rig producer sessions commonly use separate worktrees, and loop-controller
+    sessions intentionally use a separate controller worktree. Exact path
+    matching alone therefore loses the project relationship. Mailbox targets
+    are authoritative when available; the stable ``<host>-<project>-a/b/c/loop``
+    convention is the fallback used by the Studio setup.
+    """
+    mappings = config.load_mappings()
+    sessions = tmux.list_sessions_with_paths()
+    role_index: dict[str, dict[str, str]] = {}
+
+    for project_name, mapped_dir in mappings.items():
+        canonical = _canonical_path(mapped_dir)
+        try:
+            linked = mailbox.linked_targets(canonical)
+        except (OSError, mailbox.MailboxError):
+            linked = {}
+        for target, role in linked.items():
+            session = _session_from_tmux_target(target)
+            role_index[session] = {
+                "project_name": project_name,
+                "mapped_dir": canonical,
+                "role": role,
+                "mailbox_target": target,
+            }
+
+    inventory: list[dict[str, object]] = []
+    for session_row in sessions:
+        row = dict(session_row)
+        session_name = str(row.get("name") or "")
+        metadata = role_index.get(session_name)
+        if metadata:
+            row.update(metadata)
+        else:
+            session_path = _canonical_path(str(row.get("path") or ""))
+            for project_name, mapped_dir in mappings.items():
+                canonical = _canonical_path(mapped_dir)
+                if session_path == canonical:
+                    row.update(
+                        {
+                            "project_name": project_name,
+                            "mapped_dir": canonical,
+                        }
+                    )
+                    break
+                role = _infer_project_role(session_name, project_name, canonical)
+                if role:
+                    row.update(
+                        {
+                            "project_name": project_name,
+                            "mapped_dir": canonical,
+                            "role": role,
+                        }
+                    )
+                    break
+        row.setdefault("project_name", "")
+        row.setdefault("mapped_dir", str(row.get("path") or ""))
+        row.setdefault("role", "")
+        row.setdefault("mailbox_target", "")
+        inventory.append(row)
+    return inventory
+
+
+def _project_sessions(project_name: str) -> list[dict[str, object]]:
+    return [
+        row
+        for row in _session_inventory()
+        if str(row.get("project_name") or "") == project_name
+    ]
+
+
+def _resolve_project_role(project_name: str, requested_role: str) -> str | None:
+    role = _role_from_alias(requested_role)
+    if not role:
+        return None
+    matches = [row for row in _project_sessions(project_name) if row.get("role") == role]
+    if len(matches) == 1:
+        return str(matches[0]["name"])
+    return None
+
+
+def _print_session_inventory(rows: list[dict[str, object]]) -> None:
+    if not rows:
+        print("(no tmux sessions)")
+        return
+    for row in sorted(
+        rows,
+        key=lambda item: (
+            str(item.get("project_name") or "~"),
+            ROLE_ORDER.get(str(item.get("role") or ""), 9),
+            str(item.get("name") or ""),
+        ),
+    ):
+        name = str(row.get("name") or "")
+        project = str(row.get("project_name") or "-")
+        role = str(row.get("role") or "-")
+        path = str(row.get("path") or "-")
+        attached = int(bool(row.get("attached")))
+        windows = int(row.get("windows") or 0)
+        active = "-"
+        try:
+            details = tmux.list_window_details().get(name, {})
+            active_window = str(details.get("active_window") or "")
+            active_command = str(details.get("active_command") or "")
+            active = active_window
+            if active_command:
+                active += f":{active_command}"
+        except tmux.TmuxError:
+            pass
+        print(
+            f"{project}/{role}\tsession={name}\tattached={attached}"
+            f"\twindows={windows}\tactive={active}\tpath={path}"
+        )
 
 
 def cmd_focus(args: argparse.Namespace) -> int:
@@ -406,7 +595,11 @@ def cmd_focused(_: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_status(_: argparse.Namespace) -> int:
+def cmd_status(args: argparse.Namespace) -> int:
+    if getattr(args, "all", False):
+        _print_session_inventory(_session_inventory())
+        return 0
+
     focus = config.get_focus()
     webhook = config.get_webhook()
     alert_router = config.get_alert_router()
@@ -598,7 +791,46 @@ def _route_agent(session: str, runtime: str) -> str:
 
 
 def cmd_attach(args: argparse.Namespace) -> int:
-    target = args.name or _choose_attach_session_interactive()
+    requested_name = getattr(args, "name", None)
+    requested_role = getattr(args, "role", None)
+    if requested_role and not requested_name:
+        print("--role requires a project name, e.g. `oc attach lullafi --role rig-b`")
+        return 1
+
+    target: str | None
+    if requested_name and requested_role:
+        if tmux.has_session(requested_name):
+            print("--role cannot be combined with a literal tmux session name")
+            return 1
+        if not config.get_mapping(requested_name):
+            print(f"no project mapping for '{requested_name}'")
+            return 1
+        target = _resolve_project_role(requested_name, requested_role)
+        if not target:
+            available = [
+                f"{row.get('role')}={row.get('name')}"
+                for row in _project_sessions(requested_name)
+                if row.get("role")
+            ]
+            detail = "; available: " + ", ".join(available) if available else ""
+            print(f"role '{requested_role}' is not running for project '{requested_name}'{detail}")
+            return 1
+    elif (
+        requested_name
+        and config.get_mapping(requested_name)
+        and not tmux.has_session(requested_name)
+    ):
+        instances = _project_sessions(requested_name)
+        if len(instances) > 1:
+            print(
+                f"project '{requested_name}' has multiple live sessions; use `oc attach` "
+                "to pick one or `oc attach "
+                f"{requested_name} --role rig-a|rig-b|rig-c|loop`"
+            )
+            return 1
+        target = str(instances[0]["name"]) if instances else requested_name
+    else:
+        target = requested_name or _choose_attach_session_interactive()
     if not target:
         print("attach cancelled")
         return 1
@@ -649,38 +881,37 @@ def _build_attach_menu_rows(
         expanded_sessions = set()
 
     mappings = config.load_mappings()
-    all_sessions = tmux.list_sessions_with_paths()
+    all_sessions = _session_inventory()
     window_details = tmux.list_window_details()
     recent = config.get_recent_attaches()
     recent_rank = {name: i for i, name in enumerate(recent)}
     focus = config.get_focus()
     mailbox_links: dict[str, str] = {}
 
-    def _resolve_path(p: str) -> str:
-        try:
-            return str(Path(p).expanduser().resolve())
-        except Exception:
-            return p
-
     def _instances_for_mapping(mapping_name: str, mapped_dir: str) -> list[dict]:
-        canonical = _resolve_path(mapped_dir) if mapped_dir else ""
-        return [
-            s
-            for s in all_sessions
-            if s["name"] == mapping_name or (canonical and _resolve_path(s["path"]) == canonical)
+        instances = [
+            s for s in all_sessions if str(s.get("project_name") or "") == mapping_name
         ]
+        return sorted(
+            instances,
+            key=lambda s: (
+                ROLE_ORDER.get(str(s.get("role") or ""), 9),
+                str(s.get("name") or ""),
+            ),
+        )
 
     def _mailbox_info(mapped_dir: str, session_name: str) -> tuple[str, str]:
         if not mapped_dir:
             return "", ""
-        canonical = _resolve_path(mapped_dir)
+        canonical = _canonical_path(mapped_dir)
         if canonical not in mailbox_links:
-            mailbox_links.update(
-                {
-                    f"{canonical}|{target}": label
-                    for target, label in mailbox.linked_targets(canonical).items()
-                }
-            )
+            with suppress(OSError, mailbox.MailboxError):
+                mailbox_links.update(
+                    {
+                        f"{canonical}|{target}": label
+                        for target, label in mailbox.linked_targets(canonical).items()
+                    }
+                )
         prefix = f"{canonical}|{session_name}:"
         for key, label in mailbox_links.items():
             if key.startswith(prefix):
@@ -782,19 +1013,25 @@ def _build_attach_menu_rows(
                 }
             )
             if is_expanded:
-                for j, sess in enumerate(instances, 1):
+                for sess in instances:
                     row = {
                         "row_type": "child",
                         "name": sess["name"],
-                        "display_name": f"{mapping_name} {j}",
+                        "display_name": str(sess["name"]),
                         "mapping_name": mapping_name,
                         "mapped_dir": mapped_dir,
                         "running": True,
                         "attached": sess["attached"],
                         "windows": sess["windows"],
                         "focused": sess["name"] == focus,
-                        "mailbox_role": _mailbox_info(mapped_dir, str(sess["name"]))[0],
-                        "mailbox_target": _mailbox_info(mapped_dir, str(sess["name"]))[1],
+                        "mailbox_role": (
+                            _mailbox_info(mapped_dir, str(sess["name"]))[0]
+                            or str(sess.get("role") or "")
+                        ),
+                        "mailbox_target": (
+                            _mailbox_info(mapped_dir, str(sess["name"]))[1]
+                            or str(sess.get("mailbox_target") or "")
+                        ),
                         "expanded_sessions": expanded_sessions,
                         **_window_fields(str(sess["name"])),
                         "exit": False,
@@ -817,8 +1054,14 @@ def _build_attach_menu_rows(
                 "attached": sess["attached"],
                 "windows": sess["windows"],
                 "focused": sess["name"] == focus,
-                "mailbox_role": _mailbox_info(mapped_dir, str(sess["name"]))[0],
-                "mailbox_target": _mailbox_info(mapped_dir, str(sess["name"]))[1],
+                "mailbox_role": (
+                    _mailbox_info(mapped_dir, str(sess["name"]))[0]
+                    or str(sess.get("role") or "")
+                ),
+                "mailbox_target": (
+                    _mailbox_info(mapped_dir, str(sess["name"]))[1]
+                    or str(sess.get("mailbox_target") or "")
+                ),
                 "expanded_sessions": expanded_sessions,
                 **_window_fields(str(sess["name"])),
                 "exit": False,
@@ -856,14 +1099,14 @@ def _build_attach_menu_rows(
             row = {
                 "row_type": "leaf",
                 "name": s["name"],
-                "mapping_name": s["name"],
-                "mapped_dir": "",
+                "mapping_name": str(s.get("project_name") or s["name"]),
+                "mapped_dir": str(s.get("mapped_dir") or ""),
                 "running": True,
                 "attached": s["attached"],
                 "windows": s["windows"],
                 "focused": s["name"] == focus,
-                "mailbox_role": "",
-                "mailbox_target": "",
+                "mailbox_role": str(s.get("role") or ""),
+                "mailbox_target": str(s.get("mailbox_target") or ""),
                 "expanded_sessions": expanded_sessions,
                 **_window_fields(str(s["name"])),
                 "exit": False,
@@ -989,7 +1232,7 @@ def _window_badge(row: dict[str, object]) -> str:
     return " ".join(parts)
 
 
-_VERSION = "0.8.0"
+_VERSION = "0.11.0"
 
 # Visible width of the status indicator ("● running" / "○ stopped")
 _STATUS_W = 9
@@ -2160,8 +2403,17 @@ _occtl_complete() {
     attach|focus|kill)
       COMPREPLY=( $(compgen -W "$(_occtl_tmux_sessions)" -- "$cur") )
       ;;
+    --role)
+      COMPREPLY=( $(compgen -W "rig-a rig-b rig-c loop" -- "$cur") )
+      ;;
     --agent|--runtime)
       COMPREPLY=( $(compgen -W "claude codex opencode" -- "$cur") )
+      ;;
+    ls)
+      COMPREPLY+=( $(compgen -W "--details" -- "$cur") )
+      ;;
+    status)
+      COMPREPLY+=( $(compgen -W "--all" -- "$cur") )
       ;;
     watch)
       COMPREPLY+=( $(compgen -W "--name --idle-seconds --capture-lines" -- "$cur") )
@@ -2247,9 +2499,17 @@ _occtl() {
     attach)
       if [[ "$words[CURRENT-1]" == "--agent" || "$words[CURRENT-1]" == "--runtime" ]]; then
         compadd -- claude codex opencode
+      elif [[ "$words[CURRENT-1]" == "--role" ]]; then
+        compadd -- rig-a rig-b rig-c loop
       else
-        compadd -a sessions -- --agent --runtime --cc
+        compadd -a sessions -- --agent --runtime --role --cc
       fi
+      ;;
+    ls)
+      compadd -- --details
+      ;;
+    status)
+      compadd -- --all
       ;;
     focus|kill)
       compadd -a sessions
@@ -2297,7 +2557,10 @@ complete -c oc -n "__fish_seen_subcommand_from map" -F
 complete -c oc -n "__fish_seen_subcommand_from attach focus kill" -a "(__occtl_tmux_sessions)"
 complete -c oc -n "__fish_seen_subcommand_from attach" -l agent -r -a "claude codex opencode"
 complete -c oc -n "__fish_seen_subcommand_from attach" -l runtime -r -a "claude codex opencode"
+complete -c oc -n "__fish_seen_subcommand_from attach" -l role -r -a "rig-a rig-b rig-c loop"
 complete -c oc -n "__fish_seen_subcommand_from attach" -l cc
+complete -c oc -n "__fish_seen_subcommand_from ls" -l details
+complete -c oc -n "__fish_seen_subcommand_from status" -l all
 complete -c oc -n "__fish_seen_subcommand_from watch" -l name -r -a "(__occtl_tmux_sessions)"
 complete -c oc -n "__fish_seen_subcommand_from watch" -l idle-seconds -r
 complete -c oc -n "__fish_seen_subcommand_from watch" -l capture-lines -r
@@ -2359,6 +2622,12 @@ def build_parser() -> argparse.ArgumentParser:
     sp.set_defaults(fn=cmd_ensure)
 
     sp = sub.add_parser("ls", help="list tmux sessions")
+    sp.add_argument(
+        "--details",
+        "-v",
+        action="store_true",
+        help="include project, rig role, active window, and working directory",
+    )
     sp.set_defaults(fn=cmd_ls)
 
     sp = sub.add_parser("focus", help="set focused session")
@@ -2369,6 +2638,11 @@ def build_parser() -> argparse.ArgumentParser:
     sp.set_defaults(fn=cmd_focused)
 
     sp = sub.add_parser("status", help="show focus + mapping + idle seconds")
+    sp.add_argument(
+        "--all",
+        action="store_true",
+        help="show every live tmux session grouped by project and rig role",
+    )
     sp.set_defaults(fn=cmd_status)
 
     sp = sub.add_parser("say", help="send text to OpenCode (focused session by default)")
@@ -2393,6 +2667,13 @@ def build_parser() -> argparse.ArgumentParser:
         dest="runtime",
         choices=tuple(AGENT_SPECS),
         help="launch this agent in a dedicated window and route its mailbox rig",
+    )
+    sp.add_argument(
+        "--role",
+        help=(
+            "attach an existing project role without knowing its tmux session name "
+            "(rig-a, rig-b, rig-c, or loop)"
+        ),
     )
     sp.add_argument(
         "--cc",

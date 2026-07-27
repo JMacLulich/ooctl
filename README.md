@@ -78,11 +78,18 @@ oc ensure infra
 
 ```bash
 oc ls                    # list sessions
+oc ls --details          # show project, role, active window, and path
 oc focus infra           # focus a session
 oc say "run tests and summarize failures"  # send text to focused session
 oc enter                 # send Enter to focused session
 oc status                # focus + mapped dir + idle seconds
-oc attach infra          # interactive attach (best from Termius)
+oc status --all          # show every live session grouped by project/role
+oc attach                # interactive picker for all live projects and sessions
+oc attach infra          # attach a single mapped project session
+oc attach lullafi --role rig-a    # attach the existing Rig A session
+oc attach lullafi --role rig-b    # attach the existing Rig B session
+oc attach lullafi --role rig-c    # attach the existing Rig C session
+oc attach lullafi --role loop     # attach the loop controller session
 oc attach infra --agent claude     # launch + route Claude, then attach
 oc attach infra --agent codex      # launch + route Codex, then attach
 oc attach infra --agent opencode   # launch + route OpenCode, then attach
@@ -108,7 +115,8 @@ when the TUI refreshes. This covers the common case where you create two
 `zoom-mvps` or `cash-claw` sessions and want them tied together without
 remembering any setup commands.
 
-For the three-rig setup, use agent-aware attach. It creates a dedicated
+For the three-rig setup, use agent-aware attach only when you intend to launch
+or route an agent. It creates a dedicated
 `agent-claude`, `agent-codex`, or `agent-opencode` window, starts the selected
 CLI once, sets `RIG_NAME`/`RIG_WORKSPACE`, creates the project mailbox when
 needed, and writes the stable tmux target into `rigs.toml`:
@@ -123,8 +131,15 @@ The agent flag can also be written as `--runtime`. Repeating the command is
 safe: an existing matching role/session is reused, and an unassigned role gets
 the next sibling session automatically, rather than launching a second copy.
 The role defaults are Claude → Rig A, Codex → Rig B, and OpenCode → Rig C. The
-normal `oc attach` picker remains available when you only want to attach
+The normal `oc attach` picker remains available when you only want to attach
 without changing the runtime or mailbox routing.
+
+`oc attach` understands producer worktrees and controller sessions. It groups
+sessions using project-local mailbox targets first, then falls back to the
+stable `<host>-<project>-a`, `-b`, `-c`, and `-loop` naming convention. This
+means Rig B/C worktrees and a separate loop-controller worktree still appear
+under one project in the picker. The `--role` form is read-only attachment:
+it never creates a session or launches an agent.
 
 The standalone wizard also exists:
 
