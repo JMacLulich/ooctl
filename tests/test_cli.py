@@ -641,7 +641,7 @@ def test_cmd_attach_uses_interactive_choice_when_name_missing(monkeypatch) -> No
     monkeypatch.setattr(cli.tmux, "has_session", lambda name: name == "filter2")
     monkeypatch.setattr(cli.tmux, "list_windows", lambda session: ["main", "logs", "shell"])
 
-    called: dict[str, str | None | bool] = {
+    called: dict[str, str | bool | None] = {
         "focus": None,
         "attach": None,
         "recent": None,
@@ -691,7 +691,7 @@ def test_cmd_attach_starts_mapped_session_when_not_running(monkeypatch) -> None:
     monkeypatch.setattr(cli.tmux, "has_session", _has_session)
     monkeypatch.setattr(cli, "cmd_new", _cmd_new)
 
-    called: dict[str, str | None | bool] = {
+    called: dict[str, str | bool | None] = {
         "focus": None,
         "attach": None,
         "recent": None,
@@ -728,7 +728,7 @@ def test_cmd_attach_passes_cc_flag_to_tmux(monkeypatch) -> None:
     monkeypatch.setattr(cli.tmux, "has_session", lambda name: name == "filter2")
     monkeypatch.setattr(cli.tmux, "list_windows", lambda session: ["main", "logs", "shell"])
 
-    called: dict[str, str | None | bool] = {
+    called: dict[str, str | bool | None] = {
         "focus": None,
         "attach": None,
         "recent": None,

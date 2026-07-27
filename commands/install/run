@@ -102,6 +102,16 @@ ensure_tmux
 echo "Bootstrapping packaging tools in ${RUN_VENV_DIR:-local environment}..."
 "$PYTHON_BIN" -m pip install --upgrade pip setuptools wheel
 
+echo "Removing stale occtl package records..."
+removed_records=0
+while "$PYTHON_BIN" -m pip show occtl >/dev/null 2>&1; do
+  "$PYTHON_BIN" -m pip uninstall -y occtl >/dev/null
+  removed_records=$((removed_records + 1))
+done
+if [[ "$removed_records" -gt 0 ]]; then
+  echo "Removed stale occtl records: $removed_records"
+fi
+
 echo "Installing occtl into ${RUN_VENV_DIR:-local environment}..."
 "$PYTHON_BIN" -m pip install --ignore-installed -e '.[dev]' --no-build-isolation
 echo "Installed occtl in ${RUN_VENV_DIR:-local environment}."
