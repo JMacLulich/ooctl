@@ -20,6 +20,7 @@ from pathlib import Path
 from . import clipboard, config, mailbox, tmux
 from .notify import alert_router_webhook, discord_webhook, mac_notify
 from .relay import serve as serve_relay
+from .roles import resolve_role
 from .voice import parse_voice
 
 COMMANDS = (
@@ -67,26 +68,6 @@ AGENT_SPECS: dict[str, dict[str, str]] = {
     "claude": {"label": "Rig A", "runtime": "claude-code", "command": "claude"},
     "codex": {"label": "Rig B", "runtime": "codex", "command": "codex"},
     "opencode": {"label": "Rig C", "runtime": "opencode", "command": "opencode"},
-}
-
-ROLE_ALIASES = {
-    "a": "Rig A",
-    "rig-a": "Rig A",
-    "rig a": "Rig A",
-    "head": "Rig A",
-    "claude": "Rig A",
-    "b": "Rig B",
-    "rig-b": "Rig B",
-    "rig b": "Rig B",
-    "codex": "Rig B",
-    "c": "Rig C",
-    "rig-c": "Rig C",
-    "rig c": "Rig C",
-    "opencode": "Rig C",
-    "loop": "Loop Controller",
-    "controller": "Loop Controller",
-    "loop-controller": "Loop Controller",
-    "loop controller": "Loop Controller",
 }
 
 ROLE_ORDER = {
@@ -436,14 +417,7 @@ def _slug(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", value.lower())
 
 
-def _role_from_alias(value: str) -> str | None:
-    normalized = " ".join(value.strip().lower().replace("_", "-").split())
-    return ROLE_ALIASES.get(normalized) or ROLE_ALIASES.get(normalized.replace(" ", "-"))
-
-
-def _infer_project_role(
-    session: str, mapping_name: str, mapped_dir: str
-) -> str | None:
+def _infer_project_role(session: str, mapping_name: str, mapped_dir: str) -> str | None:
     session_slug = _slug(session)
     project_slugs = {_slug(mapping_name), _slug(Path(mapped_dir).name)}
     project_slugs.discard("")
@@ -488,10 +462,11 @@ def _session_inventory() -> list[dict[str, object]]:
             linked = {}
         for target, role in linked.items():
             session = _session_from_tmux_target(target)
+            canonical_role = resolve_role(role)
             role_index[session] = {
                 "project_name": project_name,
                 "mapped_dir": canonical,
-                "role": role,
+                "role": canonical_role or role,
                 "mailbox_target": target,
             }
 
@@ -534,19 +509,22 @@ def _session_inventory() -> list[dict[str, object]]:
 
 def _project_sessions(project_name: str) -> list[dict[str, object]]:
     return [
-        row
-        for row in _session_inventory()
-        if str(row.get("project_name") or "") == project_name
+        row for row in _session_inventory() if str(row.get("project_name") or "") == project_name
     ]
 
 
 def _resolve_project_role(project_name: str, requested_role: str) -> str | None:
-    role = _role_from_alias(requested_role)
+    role = resolve_role(requested_role)
     if not role:
         return None
-    matches = [row for row in _project_sessions(project_name) if row.get("role") == role]
+    matches = [
+        row for row in _project_sessions(project_name) if resolve_role(row.get("role")) == role
+    ]
     if len(matches) == 1:
         return str(matches[0]["name"])
+    registered = [row for row in matches if str(row.get("mailbox_target") or "")]
+    if len(registered) == 1:
+        return str(registered[0]["name"])
     return None
 
 
@@ -558,13 +536,13 @@ def _print_session_inventory(rows: list[dict[str, object]]) -> None:
         rows,
         key=lambda item: (
             str(item.get("project_name") or "~"),
-            ROLE_ORDER.get(str(item.get("role") or ""), 9),
+            ROLE_ORDER.get(resolve_role(item.get("role")) or "", 9),
             str(item.get("name") or ""),
         ),
     ):
         name = str(row.get("name") or "")
         project = str(row.get("project_name") or "-")
-        role = str(row.get("role") or "-")
+        role = resolve_role(row.get("role")) or str(row.get("role") or "-")
         path = str(row.get("path") or "-")
         attached = int(bool(row.get("attached")))
         windows = int(row.get("windows") or 0)
@@ -723,8 +701,11 @@ def _ensure_agent_window(session: str, workspace: str, runtime: str) -> str:
 
 
 def _linked_session_for_label(workspace: str, label: str) -> str | None:
+    canonical_label = resolve_role(label)
+    if not canonical_label:
+        return None
     for target, linked_label in mailbox.linked_targets(workspace).items():
-        if linked_label.casefold() != label.casefold():
+        if resolve_role(linked_label) != canonical_label:
             continue
         session = _session_from_tmux_target(target)
         if tmux.has_session(session):
@@ -808,7 +789,7 @@ def cmd_attach(args: argparse.Namespace) -> int:
         target = _resolve_project_role(requested_name, requested_role)
         if not target:
             available = [
-                f"{row.get('role')}={row.get('name')}"
+                f"{resolve_role(row.get('role')) or row.get('role')}={row.get('name')}"
                 for row in _project_sessions(requested_name)
                 if row.get("role")
             ]
@@ -889,13 +870,11 @@ def _build_attach_menu_rows(
     mailbox_links: dict[str, str] = {}
 
     def _instances_for_mapping(mapping_name: str, mapped_dir: str) -> list[dict]:
-        instances = [
-            s for s in all_sessions if str(s.get("project_name") or "") == mapping_name
-        ]
+        instances = [s for s in all_sessions if str(s.get("project_name") or "") == mapping_name]
         return sorted(
             instances,
             key=lambda s: (
-                ROLE_ORDER.get(str(s.get("role") or ""), 9),
+                ROLE_ORDER.get(resolve_role(s.get("role")) or "", 9),
                 str(s.get("name") or ""),
             ),
         )
@@ -915,7 +894,7 @@ def _build_attach_menu_rows(
         prefix = f"{canonical}|{session_name}:"
         for key, label in mailbox_links.items():
             if key.startswith(prefix):
-                return label, key.removeprefix(f"{canonical}|")
+                return resolve_role(label) or label, key.removeprefix(f"{canonical}|")
         return "", ""
 
     def _window_fields(session_name: str) -> dict[str, object]:
@@ -1026,6 +1005,7 @@ def _build_attach_menu_rows(
                         "focused": sess["name"] == focus,
                         "mailbox_role": (
                             _mailbox_info(mapped_dir, str(sess["name"]))[0]
+                            or resolve_role(sess.get("role"))
                             or str(sess.get("role") or "")
                         ),
                         "mailbox_target": (
@@ -1056,6 +1036,7 @@ def _build_attach_menu_rows(
                 "focused": sess["name"] == focus,
                 "mailbox_role": (
                     _mailbox_info(mapped_dir, str(sess["name"]))[0]
+                    or resolve_role(sess.get("role"))
                     or str(sess.get("role") or "")
                 ),
                 "mailbox_target": (
@@ -1105,7 +1086,7 @@ def _build_attach_menu_rows(
                 "attached": s["attached"],
                 "windows": s["windows"],
                 "focused": s["name"] == focus,
-                "mailbox_role": str(s.get("role") or ""),
+                "mailbox_role": resolve_role(s.get("role")) or str(s.get("role") or ""),
                 "mailbox_target": str(s.get("mailbox_target") or ""),
                 "expanded_sessions": expanded_sessions,
                 **_window_fields(str(s["name"])),
@@ -1232,7 +1213,7 @@ def _window_badge(row: dict[str, object]) -> str:
     return " ".join(parts)
 
 
-_VERSION = "0.11.2"
+_VERSION = "0.11.3"
 
 # Visible width of the status indicator ("● running" / "○ stopped")
 _STATUS_W = 9
@@ -1577,7 +1558,7 @@ def _auto_link_two_session_mailboxes() -> None:
             _set_rig_env_from_targets(names, linked, canonical)
             continue
         existing = {
-            label: _session_from_tmux_target(target)
+            resolve_role(label) or label: _session_from_tmux_target(target)
             for target, label in linked.items()
             if _session_from_tmux_target(target) in names
         }
@@ -1633,7 +1614,7 @@ def _preferred_mailbox_window(
     role_commands = {
         "Rig A": {"claude"},
         "Rig B": {"codex", "node"},
-    }.get(label, set())
+    }.get(resolve_role(label) or label, set())
     ai_commands = {"claude", "codex", "node", "opencode"}
 
     for preferred in (role_commands, ai_commands):
@@ -1664,11 +1645,12 @@ def _set_rig_env_from_targets(
 
 
 def _set_rig_session_env(session: str, rig_name: str, workspace: str | Path) -> None:
+    canonical_role = resolve_role(rig_name) or rig_name
     with suppress(tmux.TmuxError):
         tmux.set_session_environment(
             session,
             {
-                "RIG_NAME": rig_name,
+                "RIG_NAME": canonical_role,
                 "RIG_WORKSPACE": str(Path(workspace).expanduser().resolve()),
             },
         )
@@ -2079,26 +2061,27 @@ def cmd_completion(args: argparse.Namespace) -> int:
 
 def cmd_mailbox_link(args: argparse.Namespace) -> int:
     workspace = args.workspace or config.get_mapping(args.session) or os.getcwd()
+    canonical_role = resolve_role(args.rig) or args.rig
     try:
         mailbox.ensure_mailbox(workspace)
         window = (
-            _preferred_mailbox_window(args.session, args.rig, tmux.list_window_details())
+            _preferred_mailbox_window(args.session, canonical_role, tmux.list_window_details())
             if args.window == "auto"
             else args.window
         )
         rigs_file = mailbox.link_rig(
             workspace=workspace,
-            label=args.rig,
+            label=canonical_role,
             session=args.session,
             runtime=args.runtime,
             window=window,
         )
-        _set_rig_session_env(args.session, args.rig, workspace)
+        _set_rig_session_env(args.session, canonical_role, workspace)
     except mailbox.MailboxError as e:
         print(str(e))
         return 1
 
-    print(f"linked:\t{args.rig} -> {mailbox.tmux_target(args.session, window)}")
+    print(f"linked:\t{canonical_role} -> {mailbox.tmux_target(args.session, window)}")
     print(f"file:\t{rigs_file}")
     return 0
 

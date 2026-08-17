@@ -4,13 +4,16 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from .roles import resolve_role
+
 
 class MailboxError(RuntimeError):
     pass
 
 
 def rig_key(label: str) -> str:
-    key = "-".join(label.lower().split())
+    canonical = resolve_role(label)
+    key = "-".join((canonical or label).casefold().replace("_", " ").split())
     if not key:
         raise MailboxError("rig label is required")
     return key
@@ -205,7 +208,8 @@ def linked_targets(workspace: str | Path) -> dict[str, str]:
                 out[current_target] = current_label
             current_target = ""
             key = line.removeprefix("[rigs.").removesuffix("]").strip('"')
-            current_label = " ".join(part.capitalize() for part in key.split("-"))
+            display_label = " ".join(part.capitalize() for part in key.split("-"))
+            current_label = resolve_role(display_label) or display_label
             continue
         if line.startswith("tmux_target") and "=" in line:
             value = line.split("=", 1)[1].strip()

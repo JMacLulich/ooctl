@@ -137,7 +137,7 @@ def test_session_inventory_uses_mailbox_roles_and_studio_naming_fallback(
         "linked_targets",
         lambda _workspace: {
             "studio-lullafi-a:main": "Rig A",
-            "studio-lullafi-b:main": "Rig B",
+            "studio-lullafi-b:main": "RIG_B",
         },
     )
     monkeypatch.setattr(
@@ -182,6 +182,67 @@ def test_session_inventory_uses_mailbox_roles_and_studio_naming_fallback(
         "studio-lullafi-loop": "Loop Controller",
     }
     assert all(projects[name] == "lullafi" for name in projects)
+
+
+def test_linked_session_and_environment_use_canonical_role_resolver(monkeypatch) -> None:
+    monkeypatch.setattr(
+        cli.mailbox,
+        "linked_targets",
+        lambda _workspace: {"neuma-b:main": "RIG_B"},
+    )
+    monkeypatch.setattr(cli.tmux, "has_session", lambda name: name == "neuma-b")
+    environment: dict[str, str] = {}
+    monkeypatch.setattr(
+        cli.tmux,
+        "set_session_environment",
+        lambda _session, values: environment.update(values),
+    )
+
+    assert cli._linked_session_for_label("/tmp/neuma", "rig-b") == "neuma-b"
+    cli._set_rig_session_env("neuma-b", "RIG_B", "/tmp/neuma")
+    assert environment["RIG_NAME"] == "Rig B"
+
+
+def test_project_role_resolution_normalizes_requested_and_registered_role(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        cli,
+        "_project_sessions",
+        lambda _project: [
+            {
+                "name": "rig-v2-neuma-interactive-rig-b",
+                "role": "RIG_B",
+                "mailbox_target": "rig-v2-neuma-interactive-rig-b:0",
+            }
+        ],
+    )
+
+    assert cli._resolve_project_role("neuma", "rig-b") == "rig-v2-neuma-interactive-rig-b"
+    assert cli._resolve_project_role("neuma", "Rig B") == "rig-v2-neuma-interactive-rig-b"
+
+
+def test_project_role_resolution_prefers_registered_target_over_stale_duplicate(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        cli,
+        "_project_sessions",
+        lambda _project: [
+            {
+                "name": "rig-v2-neuma-interactive-rig-b",
+                "role": "Rig B",
+                "mailbox_target": "rig-v2-neuma-interactive-rig-b:0",
+            },
+            {
+                "name": "studio-neuma-b",
+                "role": "Rig B",
+                "mailbox_target": "",
+            },
+        ],
+    )
+
+    assert cli._resolve_project_role("neuma", "RIG B") == "rig-v2-neuma-interactive-rig-b"
 
 
 def test_project_role_attach_does_not_create_a_new_session(monkeypatch, capsys) -> None:
@@ -990,7 +1051,7 @@ def test_menu_row_handles_ansi_without_border_shift() -> None:
 
 
 def test_version_string_appears_in_version_constant() -> None:
-    assert cli._VERSION == "0.11.2"
+    assert cli._VERSION == "0.11.3"
 
 
 def test_read_menu_key_recognizes_csi_arrow_sequences() -> None:
