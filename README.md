@@ -89,6 +89,7 @@ oc attach infra          # attach a single mapped project session
 oc attach lullafi --role rig-a    # attach the existing Rig A session
 oc attach lullafi --role rig-b    # attach the existing Rig B session
 oc attach lullafi --role rig-c    # attach the existing Rig C session
+oc attach lullafi rig-a            # concise positional form
 oc attach lullafi --role loop     # attach the loop controller session
 oc attach infra --agent claude     # launch + route Claude, then attach
 oc attach infra --agent codex      # launch + route Codex, then attach

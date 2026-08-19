@@ -127,6 +127,23 @@ def test_attach_command_accepts_existing_project_role() -> None:
     assert args.role == "rig-b"
 
 
+def test_attach_command_accepts_positional_project_role() -> None:
+    parser = cli.build_parser()
+
+    args = parser.parse_args(["attach", "lullafi", "rig-a"])
+
+    assert args.name == "lullafi"
+    assert args.role_positional == "rig-a"
+
+
+def test_attach_rejects_unknown_positional_role() -> None:
+    rc = cli.cmd_attach(
+        argparse.Namespace(name="lullafi", role=None, role_positional="not-a-rig")
+    )
+
+    assert rc == 1
+
+
 def test_session_inventory_uses_mailbox_roles_and_studio_naming_fallback(
     monkeypatch, tmp_path: Path
 ) -> None:

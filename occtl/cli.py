@@ -773,7 +773,15 @@ def _route_agent(session: str, runtime: str) -> str:
 
 def cmd_attach(args: argparse.Namespace) -> int:
     requested_name = getattr(args, "name", None)
-    requested_role = getattr(args, "role", None)
+    option_role = getattr(args, "role", None)
+    positional_role = getattr(args, "role_positional", None)
+    if option_role and positional_role:
+        print("role must be provided either positionally or with --role, not both")
+        return 1
+    requested_role = option_role or positional_role
+    if requested_role and not resolve_role(requested_role):
+        print(f"unknown role '{requested_role}'; expected rig-a, rig-b, rig-c, or loop")
+        return 1
     if requested_role and not requested_name:
         print("--role requires a project name, e.g. `oc attach lullafi --role rig-b`")
         return 1
@@ -2644,6 +2652,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="attach to a session; optionally launch and route Claude, Codex, or OpenCode",
     )
     sp.add_argument("name", nargs="?", default=None)
+    sp.add_argument("role_positional", nargs="?", default=None, metavar="role")
     sp.add_argument(
         "--agent",
         "--runtime",
