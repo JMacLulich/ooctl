@@ -17,7 +17,7 @@ from contextlib import suppress
 from datetime import datetime
 from pathlib import Path
 
-from . import clipboard, config, mailbox, tmux
+from . import clipboard, config, mailbox, rigby, tmux
 from .notify import alert_router_webhook, discord_webhook, mac_notify
 from .relay import serve as serve_relay
 from .roles import resolve_role
@@ -36,6 +36,7 @@ COMMANDS = (
     "say",
     "enter",
     "attach",
+    "restart",
     "kill",
     "watch",
     "set-webhook",
@@ -75,6 +76,12 @@ ROLE_ORDER = {
     "Rig B": 1,
     "Rig C": 2,
     "Loop Controller": 3,
+}
+
+ROLE_RUNTIMES = {
+    "Rig A": "claude",
+    "Rig B": "codex",
+    "Rig C": "opencode",
 }
 
 SHELL_COMMANDS = {"bash", "fish", "sh", "zsh", "-bash", "-fish", "-sh", "-zsh", "login"}
@@ -361,13 +368,33 @@ def _create_project_session(name: str, workdir: str) -> None:
     tmux.new_window(name, "shell", workdir)
 
 
+def _rigby_role_key(label: str) -> str:
+    canonical = resolve_role(label)
+    return {
+        "Rig A": "rig-a",
+        "Rig B": "rig-b",
+        "Rig C": "rig-c",
+        "Loop Controller": "loop-controller",
+    }.get(canonical or label, (canonical or label).casefold().replace(" ", "-"))
+
+
+def _reconcile_rigby_mapping(name: str, workdir: str) -> int:
+    try:
+        project = rigby.reconcile(workdir)
+    except rigby.RigbyError as exc:
+        print(str(exc))
+        return 1
+
+    role = project.role("rig-a") or (project.roles[0] if project.roles else None)
+    if role:
+        config.set_focus(_session_from_tmux_target(role.tmux_target))
+    role_names = ", ".join(role.key for role in project.roles) or "none"
+    print(f"reconciled+focused: {name}\trigby roles={role_names}")
+    return 0
+
+
 def cmd_new(args: argparse.Namespace) -> int:
     name = args.name
-    if tmux.has_session(name):
-        config.set_focus(name)
-        print(f"exists+focused: {name}")
-        return 0
-
     workdir = config.get_mapping(name)
     if not workdir:
         print(f"No mapping for '{name}'. Add one:\n  oc map {name} /path/to/project")
@@ -376,6 +403,14 @@ def cmd_new(args: argparse.Namespace) -> int:
     if not Path(workdir).exists():
         print(f"Mapped directory does not exist: {workdir}")
         return 1
+
+    if rigby.is_enabled(workdir):
+        return _reconcile_rigby_mapping(name, workdir)
+
+    if tmux.has_session(name):
+        config.set_focus(name)
+        print(f"exists+focused: {name}")
+        return 0
 
     _create_project_session(name, workdir)
 
@@ -456,6 +491,24 @@ def _session_inventory() -> list[dict[str, object]]:
 
     for project_name, mapped_dir in mappings.items():
         canonical = _canonical_path(mapped_dir)
+        if rigby.is_enabled(canonical):
+            try:
+                rigby_project = rigby.attach_metadata(canonical)
+            except rigby.RigbyError:
+                # A Rigby marker is authoritative. Do not fall back to a shadow
+                # .rig-mailbox or naming heuristics when its public metadata is
+                # unavailable; that would make the TUI point at the wrong rig.
+                continue
+            if rigby_project:
+                for role in rigby_project.roles:
+                    session = _session_from_tmux_target(role.tmux_target)
+                    role_index[session] = {
+                        "project_name": project_name,
+                        "mapped_dir": canonical,
+                        "role": resolve_role(role.key) or role.key,
+                        "mailbox_target": role.tmux_target,
+                    }
+            continue
         try:
             linked = mailbox.linked_targets(canonical)
         except (OSError, mailbox.MailboxError):
@@ -721,6 +774,15 @@ def _ensure_agent_session(session: str, runtime: str) -> str:
             f"session '{session}' has no mapped workspace; run `oc map {session} /path/to/project`"
         )
 
+    if rigby.is_enabled(workspace):
+        project = rigby.attach_metadata(workspace)
+        if project is None:
+            raise rigby.RigbyError("Rigby marker disappeared while resolving the runtime")
+        role = project.role(_rigby_role_key(spec["label"]))
+        if role is None:
+            raise rigby.RigbyError(f"Rigby metadata has no {_rigby_role_key(spec['label'])} role")
+        return _session_from_tmux_target(role.tmux_target)
+
     mailbox.ensure_mailbox(workspace)
     linked_session = _linked_session_for_label(workspace, spec["label"])
     mapped_path = config.get_mapping(session)
@@ -755,6 +817,15 @@ def _route_agent(session: str, runtime: str) -> str:
         raise mailbox.MailboxError(
             f"session '{session}' has no mapped workspace; run `oc map {session} /path/to/project`"
         )
+
+    if rigby.is_enabled(workspace):
+        project = rigby.attach_metadata(workspace)
+        if project is None:
+            raise rigby.RigbyError("Rigby marker disappeared while routing the runtime")
+        role = project.role(_rigby_role_key(spec["label"]))
+        if role is None:
+            raise rigby.RigbyError(f"Rigby metadata has no {_rigby_role_key(spec['label'])} role")
+        return role.tmux_target
 
     mailbox.ensure_mailbox(workspace)
     _set_rig_session_env(session, spec["label"], workspace)
@@ -796,6 +867,12 @@ def cmd_attach(args: argparse.Namespace) -> int:
             return 1
         target = _resolve_project_role(requested_name, requested_role)
         if not target:
+            mapped_dir = config.get_mapping(requested_name)
+            if mapped_dir and rigby.is_enabled(mapped_dir):
+                if _reconcile_rigby_mapping(requested_name, mapped_dir) != 0:
+                    return 1
+                target = _resolve_project_role(requested_name, requested_role)
+        if not target:
             available = [
                 f"{resolve_role(row.get('role')) or row.get('role')}={row.get('name')}"
                 for row in _project_sessions(requested_name)
@@ -810,6 +887,10 @@ def cmd_attach(args: argparse.Namespace) -> int:
         and not tmux.has_session(requested_name)
     ):
         instances = _project_sessions(requested_name)
+        if not instances and rigby.is_enabled(config.get_mapping(requested_name)):
+            if _reconcile_rigby_mapping(requested_name, config.get_mapping(requested_name)) != 0:
+                return 1
+            instances = _project_sessions(requested_name)
         if len(instances) > 1:
             print(
                 f"project '{requested_name}' has multiple live sessions; use `oc attach` "
@@ -839,7 +920,7 @@ def cmd_attach(args: argparse.Namespace) -> int:
         try:
             session = _ensure_agent_session(session, runtime)
             target = _route_agent(session, runtime)
-        except (mailbox.MailboxError, tmux.TmuxError) as e:
+        except (mailbox.MailboxError, rigby.RigbyError, tmux.TmuxError) as e:
             print(str(e))
             return 1
         print(f"routed:\t{AGENT_SPECS[runtime]['label']} -> {target}")
@@ -851,6 +932,55 @@ def cmd_attach(args: argparse.Namespace) -> int:
     for hint in _clipboard_attach_hints():
         print(hint)
     tmux.attach(target, control_mode=bool(getattr(args, "cc", False)))
+    return 0
+
+
+def cmd_restart(args: argparse.Namespace) -> int:
+    project_name = str(args.name)
+    requested_role = str(args.role)
+    canonical_role = resolve_role(requested_role)
+    if not canonical_role:
+        print(f"unknown role '{requested_role}'; expected rig-a, rig-b, or rig-c")
+        return 1
+    runtime = ROLE_RUNTIMES.get(canonical_role)
+    if not runtime:
+        print("restart supports producer roles rig-a, rig-b, and rig-c; loop cannot be restarted")
+        return 1
+    if not config.get_mapping(project_name):
+        print(f"no project mapping for '{project_name}'")
+        return 1
+
+    session = _resolve_project_role(project_name, requested_role)
+    if not session:
+        available = [
+            f"{resolve_role(row.get('role')) or row.get('role')}={row.get('name')}"
+            for row in _project_sessions(project_name)
+            if row.get("role")
+        ]
+        detail = "; available: " + ", ".join(available) if available else ""
+        print(f"role '{requested_role}' is not running for project '{project_name}'{detail}")
+        return 1
+
+    role_row = next(
+        (
+            row
+            for row in _project_sessions(project_name)
+            if str(row.get("name") or "") == session
+            and resolve_role(row.get("role")) == canonical_role
+        ),
+        None,
+    )
+    target = str(role_row.get("mailbox_target") or f"{session}:0") if role_row else f"{session}:0"
+    try:
+        previous_pid, current_pid = tmux.restart_runtime(target, runtime)
+    except tmux.TmuxError as e:
+        print(str(e))
+        return 1
+
+    print(
+        f"restarted:\t{project_name}/{canonical_role}\truntime={runtime}"
+        f"\tsession={session}\tpid={previous_pid}->{current_pid}"
+    )
     return 0
 
 
@@ -889,6 +1019,10 @@ def _build_attach_menu_rows(
 
     def _mailbox_info(mapped_dir: str, session_name: str) -> tuple[str, str]:
         if not mapped_dir:
+            return "", ""
+        # Rigby owns its external mailbox and exposes role targets through
+        # attach-metadata. Never inspect the project-local shadow mailbox here.
+        if rigby.is_enabled(mapped_dir):
             return "", ""
         canonical = _canonical_path(mapped_dir)
         if canonical not in mailbox_links:
@@ -1531,82 +1665,6 @@ def _prompt_for_remap(mapping_name: str, current_dir: str, fd: int) -> tuple[str
     return new_name, new_path
 
 
-def _auto_link_two_session_mailboxes() -> None:
-    mappings = config.load_mappings()
-    sessions = tmux.list_sessions_with_paths()
-    window_details = tmux.list_window_details()
-
-    def _resolve_path(value: str) -> str:
-        try:
-            return str(Path(value).expanduser().resolve())
-        except Exception:
-            return value
-
-    for mapped_dir in mappings.values():
-        canonical = _resolve_path(mapped_dir)
-        instances = [
-            s
-            for s in sessions
-            if _resolve_path(str(s.get("path", ""))) == canonical and str(s.get("name", "")).strip()
-        ]
-        if len(instances) != 2:
-            continue
-        try:
-            mailbox.ensure_mailbox(canonical)
-        except mailbox.MailboxError:
-            continue
-        names = sorted(str(s["name"]) for s in instances)
-        linked = mailbox.linked_targets(canonical)
-        targets = {
-            names[0]: _preferred_mailbox_window(names[0], "Rig A", window_details),
-            names[1]: _preferred_mailbox_window(names[1], "Rig B", window_details),
-        }
-        wanted = {f"{name}:{window}" for name, window in targets.items()}
-        if set(linked.keys()) == wanted:
-            _set_rig_env_from_targets(names, linked, canonical)
-            continue
-        existing = {
-            resolve_role(label) or label: _session_from_tmux_target(target)
-            for target, label in linked.items()
-            if _session_from_tmux_target(target) in names
-        }
-        missing_labels = [label for label in ("Rig A", "Rig B") if label not in existing]
-        unassigned = [name for name in names if name not in set(existing.values())]
-        if len(missing_labels) == 1 and len(unassigned) == 1:
-            label = missing_labels[0]
-            session = unassigned[0]
-            try:
-                mailbox.link_rig(
-                    workspace=canonical,
-                    label=label,
-                    session=session,
-                    runtime="claude-code" if label == "Rig A" else "codex",
-                    window=_preferred_mailbox_window(session, label, window_details),
-                )
-                _set_rig_env_from_targets(names, mailbox.linked_targets(canonical), canonical)
-            except mailbox.MailboxError:
-                continue
-            continue
-        try:
-            mailbox.link_rig(
-                workspace=canonical,
-                label="Rig A",
-                session=names[0],
-                runtime="claude-code",
-                window=targets[names[0]],
-            )
-            mailbox.link_rig(
-                workspace=canonical,
-                label="Rig B",
-                session=names[1],
-                runtime="codex",
-                window=targets[names[1]],
-            )
-            _set_rig_env_from_targets(names, mailbox.linked_targets(canonical), canonical)
-        except mailbox.MailboxError:
-            continue
-
-
 def _session_from_tmux_target(target: str) -> str:
     return target.rsplit(":", 1)[0] if ":" in target else target
 
@@ -1676,6 +1734,14 @@ def _link_selected_mailbox_sessions(rows: list[dict[str, object]], selected: lis
     second_dir = str(second.get("mapped_dir") or "")
     if not first_dir or first_dir != second_dir:
         return "selected sessions must share one mapped mailbox workspace"
+    if rigby.is_enabled(first_dir):
+        try:
+            project = rigby.reconcile(first_dir)
+            mailbox_path = rigby.canonical_mailbox(first_dir)
+        except rigby.RigbyError as exc:
+            return str(exc)
+        roles = ", ".join(role.key for role in project.roles) or "none"
+        return f"Rigby reconciled mailbox {mailbox_path} ({roles})"
     try:
         mailbox.ensure_mailbox(first_dir)
         window_details = tmux.list_window_details()
@@ -1703,7 +1769,6 @@ def _link_selected_mailbox_sessions(rows: list[dict[str, object]], selected: lis
 def _choose_attach_session_interactive() -> str | None:
     expanded: set[str] = set()
     expanded_sessions: set[str] = set()
-    _auto_link_two_session_mailboxes()
     rows = _build_attach_menu_rows(expanded, expanded_sessions)
     if not rows:
         print("no mapped or running sessions found")
@@ -1721,7 +1786,6 @@ def _choose_attach_session_interactive() -> str | None:
     def _rebuild_rows() -> list[dict[str, object]]:
         nonlocal focus
         focus = config.get_focus() or "none"
-        _auto_link_two_session_mailboxes()
         return _build_attach_menu_rows(expanded, expanded_sessions)
 
     idx = 0
@@ -1896,20 +1960,28 @@ def _choose_attach_session_interactive() -> str | None:
                 mapping_name = str(row["mapping_name"])
                 new_name = _next_session_name(mapping_name)
                 try:
-                    tmux.new_session(new_name, mapped_dir)
-                    tmux.new_window(new_name, "logs", mapped_dir)
-                    tmux.new_window(new_name, "shell", mapped_dir)
-                except tmux.TmuxError:
+                    if rigby.is_enabled(mapped_dir):
+                        project = rigby.reconcile(mapped_dir)
+                        roles = ", ".join(role.key for role in project.roles) or "none"
+                        notice = f"Rigby reconciled sessions/mailbox ({roles})"
+                    else:
+                        tmux.new_session(new_name, mapped_dir)
+                        tmux.new_window(new_name, "logs", mapped_dir)
+                        tmux.new_window(new_name, "shell", mapped_dir)
+                        notice = "created generic tmux project session"
+                except (rigby.RigbyError, tmux.TmuxError) as exc:
+                    notice = str(exc)
                     rows = _rebuild_rows()
                     continue
-                # Auto-expand the group and land on the new child row
+                # Auto-expand the group and land on the new child row when a
+                # generic project session was created. Rigby creates its own
+                # canonical role sessions through the public launcher.
                 expanded.add(mapping_name)
                 rows = _rebuild_rows()
                 for i, r in enumerate(rows):
                     if r["name"] == new_name:
                         idx = i
                         break
-                notice = "auto-linked mailbox if this project now has exactly two sessions"
             elif key in {"quit", "esc"}:
                 return None
     finally:
@@ -2070,6 +2142,20 @@ def cmd_completion(args: argparse.Namespace) -> int:
 def cmd_mailbox_link(args: argparse.Namespace) -> int:
     workspace = args.workspace or config.get_mapping(args.session) or os.getcwd()
     canonical_role = resolve_role(args.rig) or args.rig
+    if rigby.is_enabled(workspace):
+        try:
+            project = rigby.reconcile(workspace)
+            mailbox_path = rigby.canonical_mailbox(workspace)
+        except rigby.RigbyError as e:
+            print(str(e))
+            return 1
+        role = project.role(_rigby_role_key(canonical_role))
+        if role is None:
+            print(f"Rigby metadata has no {_rigby_role_key(canonical_role)} role")
+            return 1
+        print(f"reconciled:\t{role.key} -> {role.tmux_target}")
+        print(f"mailbox:\t{mailbox_path}")
+        return 0
     try:
         mailbox.ensure_mailbox(workspace)
         window = (
@@ -2134,6 +2220,20 @@ def _ensure_mailbox_tmux_session(session: str, workspace: str, command: str, rig
 
 
 def cmd_mailbox_wizard(_: argparse.Namespace) -> int:
+    default_workspace = _mailbox_workspace_default()
+    if rigby.is_enabled(default_workspace):
+        try:
+            project = rigby.reconcile(default_workspace)
+            mailbox_path = rigby.canonical_mailbox(default_workspace)
+        except rigby.RigbyError as e:
+            print(str(e))
+            return 1
+        print("Rigby owns this project mailbox; interactive setup used the public launcher.")
+        print(f"mailbox:\t{mailbox_path}")
+        for role in project.roles:
+            print(f"linked:\t{role.key} -> {role.tmux_target}")
+        return 0
+
     print("Mailbox tmux setup")
     print()
     sessions = tmux.list_sessions()
@@ -2369,6 +2469,15 @@ _occtl_complete() {
     return 0
   fi
 
+  if [[ "${COMP_WORDS[1]}" == "restart" ]]; then
+    if [[ $COMP_CWORD -eq 2 ]]; then
+      COMPREPLY=( $(compgen -W "$(_occtl_mappings)" -- "$cur") )
+    elif [[ $COMP_CWORD -eq 3 ]]; then
+      COMPREPLY=( $(compgen -W "rig-a rig-b rig-c" -- "$cur") )
+    fi
+    return 0
+  fi
+
   if [[ "${COMP_WORDS[1]}" == "mailbox" ]]; then
     if [[ $COMP_CWORD -eq 2 ]]; then
       COMPREPLY=( $(compgen -W "link" -- "$cur") )
@@ -2393,6 +2502,9 @@ _occtl_complete() {
     case "$prev" in
     attach|focus|kill)
       COMPREPLY=( $(compgen -W "$(_occtl_tmux_sessions)" -- "$cur") )
+      ;;
+    restart)
+      COMPREPLY=( $(compgen -W "$(_occtl_mappings)" -- "$cur") )
       ;;
     --role)
       COMPREPLY=( $(compgen -W "rig-a rig-b rig-c loop" -- "$cur") )
@@ -2496,6 +2608,13 @@ _occtl() {
         compadd -a sessions -- --agent --runtime --role --cc
       fi
       ;;
+    restart)
+      if (( CURRENT == 3 )); then
+        compadd -a mappings
+      else
+        compadd -- rig-a rig-b rig-c
+      fi
+      ;;
     ls)
       compadd -- --details
       ;;
@@ -2550,6 +2669,7 @@ complete -c oc -n "__fish_seen_subcommand_from attach" -l agent -r -a "claude co
 complete -c oc -n "__fish_seen_subcommand_from attach" -l runtime -r -a "claude codex opencode"
 complete -c oc -n "__fish_seen_subcommand_from attach" -l role -r -a "rig-a rig-b rig-c loop"
 complete -c oc -n "__fish_seen_subcommand_from attach" -l cc
+complete -c oc -n "__fish_seen_subcommand_from restart" -a "(__occtl_mappings) rig-a rig-b rig-c"
 complete -c oc -n "__fish_seen_subcommand_from ls" -l details
 complete -c oc -n "__fish_seen_subcommand_from status" -l all
 complete -c oc -n "__fish_seen_subcommand_from watch" -l name -r -a "(__occtl_tmux_sessions)"
@@ -2673,6 +2793,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="use iTerm2 control mode (tmux -CC) when attaching",
     )
     sp.set_defaults(fn=cmd_attach)
+
+    sp = sub.add_parser(
+        "restart",
+        help="restart one Rigby-managed runtime without killing its runner or tmux session",
+    )
+    sp.add_argument("name", help="mapped project name")
+    sp.add_argument("role", help="producer role to restart: rig-a, rig-b, or rig-c")
+    sp.set_defaults(fn=cmd_restart)
 
     sp = sub.add_parser("kill", help="kill a session (focused session by default)")
     sp.add_argument("name", nargs="?", default=None)

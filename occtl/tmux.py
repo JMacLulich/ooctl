@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import os
 import resource
+import shlex
+import signal
 import subprocess
+import time
 from collections.abc import Sequence
 
 
@@ -213,6 +217,107 @@ def rename_session(old: str, new: str) -> None:
 
 def kill_window(target: str) -> None:
     run(["tmux", "kill-window", "-t", target])
+
+
+def _process_table() -> dict[int, dict[str, int | str]]:
+    try:
+        out = run(["ps", "-axo", "pid=,ppid=,pgid=,command="])
+    except TmuxError:
+        return {}
+
+    table: dict[int, dict[str, int | str]] = {}
+    for line in out.splitlines():
+        parts = line.strip().split(None, 3)
+        if len(parts) < 4:
+            continue
+        try:
+            pid, ppid, pgid = (int(value) for value in parts[:3])
+        except ValueError:
+            continue
+        table[pid] = {"pid": pid, "ppid": ppid, "pgid": pgid, "command": parts[3]}
+    return table
+
+
+def _pane_pid(target: str) -> int:
+    try:
+        return int(run(["tmux", "display-message", "-p", "-t", target, "#{pane_pid}"]))
+    except (ValueError, TmuxError) as exc:
+        raise TmuxError(f"cannot resolve tmux pane process for '{target}'") from exc
+
+
+def _descendant_processes(
+    root_pid: int, table: dict[int, dict[str, int | str]]
+) -> list[dict[str, int | str]]:
+    children: dict[int, list[dict[str, int | str]]] = {}
+    for process in table.values():
+        children.setdefault(int(process["ppid"]), []).append(process)
+
+    descendants: list[dict[str, int | str]] = []
+    pending = list(children.get(root_pid, []))
+    while pending:
+        process = pending.pop(0)
+        descendants.append(process)
+        pending.extend(children.get(int(process["pid"]), []))
+    return descendants
+
+
+def _command_name(command: str) -> str:
+    try:
+        argv = shlex.split(command)
+    except ValueError:
+        return ""
+    return os.path.basename(argv[0]) if argv else ""
+
+
+def _runtime_pid(target: str, runtime: str) -> int:
+    expected = {
+        "claude": {"claude"},
+        "claude-code": {"claude"},
+        "codex": {"codex"},
+        "opencode": {"opencode"},
+    }.get(runtime)
+    if not expected:
+        raise TmuxError(f"unsupported runtime '{runtime}'")
+
+    pane_pid = _pane_pid(target)
+    table = _process_table()
+    candidates = [
+        process
+        for process in _descendant_processes(pane_pid, table)
+        if int(process["pgid"]) == pane_pid and _command_name(str(process["command"])) in expected
+    ]
+    if len(candidates) != 1:
+        found = ", ".join(str(process["pid"]) for process in candidates) or "none"
+        raise TmuxError(
+            f"expected exactly one {runtime} process under tmux pane '{target}'; found {found}"
+        )
+    return int(candidates[0]["pid"])
+
+
+def restart_runtime(target: str, runtime: str, timeout: float = 15.0) -> tuple[int, int]:
+    """Restart only the runtime child owned by a Rigby runner pane.
+
+    Rigby owns the pane process and relaunches its visible runtime child when
+    that child exits. Killing the exact child preserves the runner, mailbox,
+    and tmux session while still applying a new runtime/profile environment.
+    """
+    previous_pid = _runtime_pid(target, runtime)
+    try:
+        os.kill(previous_pid, signal.SIGTERM)
+    except OSError as exc:
+        raise TmuxError(f"could not stop {runtime} process {previous_pid}: {exc}") from exc
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            current_pid = _runtime_pid(target, runtime)
+        except TmuxError:
+            current_pid = 0
+        if current_pid and current_pid != previous_pid:
+            return previous_pid, current_pid
+        time.sleep(0.25)
+
+    raise TmuxError(f"{runtime} did not relaunch under tmux pane '{target}' within {timeout:g}s")
 
 
 def pane_last_activity(session: str, window: str = "main") -> int:

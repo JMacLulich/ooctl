@@ -137,11 +137,60 @@ def test_attach_command_accepts_positional_project_role() -> None:
 
 
 def test_attach_rejects_unknown_positional_role() -> None:
-    rc = cli.cmd_attach(
-        argparse.Namespace(name="lullafi", role=None, role_positional="not-a-rig")
-    )
+    rc = cli.cmd_attach(argparse.Namespace(name="lullafi", role=None, role_positional="not-a-rig"))
 
     assert rc == 1
+
+
+def test_restart_command_accepts_project_role() -> None:
+    parser = cli.build_parser()
+
+    args = parser.parse_args(["restart", "lullafi", "rig-c"])
+
+    assert args.name == "lullafi"
+    assert args.role == "rig-c"
+
+
+def test_cmd_restart_targets_only_selected_rigby_runtime(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(
+        cli.config,
+        "get_mapping",
+        lambda name: "/tmp/lullafi" if name == "lullafi" else None,
+    )
+    monkeypatch.setattr(cli, "_resolve_project_role", lambda _project, _role: "studio-lullafi-c")
+    monkeypatch.setattr(
+        cli,
+        "_project_sessions",
+        lambda _project: [
+            {
+                "name": "studio-lullafi-c",
+                "role": "RIG_C",
+                "mailbox_target": "studio-lullafi-c:rig-c",
+            }
+        ],
+    )
+    called: dict[str, object] = {}
+
+    def _restart(target: str, runtime: str) -> tuple[int, int]:
+        called.update(target=target, runtime=runtime)
+        return (8266, 9001)
+
+    monkeypatch.setattr(cli.tmux, "restart_runtime", _restart)
+
+    rc = cli.cmd_restart(argparse.Namespace(name="lullafi", role="rig-c"))
+
+    assert rc == 0
+    assert called == {"target": "studio-lullafi-c:rig-c", "runtime": "opencode"}
+    assert "pid=8266->9001" in capsys.readouterr().out
+
+
+def test_cmd_restart_rejects_loop_role(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(cli.config, "get_mapping", lambda _name: "/tmp/lullafi")
+
+    rc = cli.cmd_restart(argparse.Namespace(name="lullafi", role="loop"))
+
+    assert rc == 1
+    assert "loop cannot be restarted" in capsys.readouterr().out
 
 
 def test_session_inventory_uses_mailbox_roles_and_studio_naming_fallback(
@@ -1476,97 +1525,6 @@ def test_build_attach_menu_rows_stopped_mapping_has_one_row(monkeypatch, tmp_pat
     assert len(data) == 1
     assert data[0]["name"] == "myproject"
     assert data[0]["running"] is False
-
-
-def test_auto_link_two_session_mailboxes_links_exactly_two_sessions(
-    monkeypatch, tmp_path: Path
-) -> None:
-    proj_path = tmp_path / "zoom-mvps"
-    proj_path.mkdir(parents=True)
-    proj = str(proj_path)
-    monkeypatch.setattr(cli.config, "load_mappings", lambda: {"zoom-mvps": proj})
-    monkeypatch.setattr(
-        cli.tmux,
-        "list_sessions_with_paths",
-        lambda: [
-            _make_session("zoom-mvps-a", proj),
-            _make_session("zoom-mvps-b", proj),
-        ],
-    )
-    ensured: list[str] = []
-
-    def fake_ensure_mailbox(workspace: str) -> Path:
-        ensured.append(workspace)
-        mailbox_dir = Path(workspace) / ".rig-mailbox"
-        mailbox_dir.mkdir(parents=True)
-        return mailbox_dir
-
-    monkeypatch.setattr(cli.mailbox, "ensure_mailbox", fake_ensure_mailbox)
-    env_calls: list[tuple[str, dict[str, str]]] = []
-    monkeypatch.setattr(
-        cli.tmux,
-        "set_session_environment",
-        lambda session, values: env_calls.append((session, values)),
-    )
-
-    cli._auto_link_two_session_mailboxes()
-
-    assert ensured == [proj]
-    assert env_calls == [
-        ("zoom-mvps-a", {"RIG_NAME": "Rig A", "RIG_WORKSPACE": str(proj_path.resolve())}),
-        ("zoom-mvps-b", {"RIG_NAME": "Rig B", "RIG_WORKSPACE": str(proj_path.resolve())}),
-    ]
-    text = (proj_path / ".rig-mailbox" / "rigs.toml").read_text(encoding="utf-8")
-    assert 'tmux_target = "zoom-mvps-a:main"' in text
-    assert 'tmux_target = "zoom-mvps-b:main"' in text
-
-
-def test_auto_link_preserves_existing_rig_assignment_for_recreated_pair(
-    monkeypatch, tmp_path: Path
-) -> None:
-    proj_path = tmp_path / "zoom-rag-mvp"
-    mailbox_dir = proj_path / ".rig-mailbox"
-    mailbox_dir.mkdir(parents=True)
-    (mailbox_dir / "rigs.toml").write_text(
-        "\n".join(
-            [
-                '[rigs."rig-b"]',
-                'runtime = "codex"',
-                'notifier = "tmux"',
-                'tmux_target = "zoom rag 2:main"',
-                f'workspace = "{proj_path}"',
-                "",
-            ]
-        ),
-        encoding="utf-8",
-    )
-    proj = str(proj_path)
-    monkeypatch.setattr(cli.config, "load_mappings", lambda: {"zoom rag": proj})
-    monkeypatch.setattr(
-        cli.tmux,
-        "list_sessions_with_paths",
-        lambda: [
-            _make_session("zoom rag 2", proj),
-            _make_session("zoom rag 3", proj),
-        ],
-    )
-    monkeypatch.setattr(cli.tmux, "list_window_details", lambda: {})
-    env_calls: list[tuple[str, dict[str, str]]] = []
-    monkeypatch.setattr(
-        cli.tmux,
-        "set_session_environment",
-        lambda session, values: env_calls.append((session, values)),
-    )
-
-    cli._auto_link_two_session_mailboxes()
-
-    text = (mailbox_dir / "rigs.toml").read_text(encoding="utf-8")
-    assert 'tmux_target = "zoom rag 3:main"' in text
-    assert 'tmux_target = "zoom rag 2:main"' in text
-    assert env_calls == [
-        ("zoom rag 2", {"RIG_NAME": "Rig B", "RIG_WORKSPACE": str(proj_path.resolve())}),
-        ("zoom rag 3", {"RIG_NAME": "Rig A", "RIG_WORKSPACE": str(proj_path.resolve())}),
-    ]
 
 
 def test_manual_mailbox_link_requires_same_workspace(tmp_path: Path) -> None:

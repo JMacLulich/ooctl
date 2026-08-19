@@ -91,6 +91,7 @@ oc attach lullafi --role rig-b    # attach the existing Rig B session
 oc attach lullafi --role rig-c    # attach the existing Rig C session
 oc attach lullafi rig-a            # concise positional form
 oc attach lullafi --role loop     # attach the loop controller session
+oc restart lullafi rig-c          # restart only OpenCode inside Rigby Rig C
 oc attach infra --agent claude     # launch + route Claude, then attach
 oc attach infra --agent codex      # launch + route Codex, then attach
 oc attach infra --agent opencode   # launch + route OpenCode, then attach
@@ -99,7 +100,7 @@ oc kill infra            # terminate a session (or: oc kill for focused)
 
 ### Link cross-rig mailbox to tmux
 
-For projects using the `.rig-mailbox` protocol, use the normal session TUI:
+For legacy projects using the `.rig-mailbox` protocol, use the normal session TUI:
 
 ```bash
 oc attach
@@ -107,20 +108,16 @@ oc attach
 
 The TUI shows mailbox roles beside linked sessions, e.g. `[Rig A]` and
 `[Rig B]`. Press `m` to enter mailbox mode, then select two running sessions
-from the same workspace. If that workspace does not have `.rig-mailbox` yet,
-`oc attach` creates it first, then links the sessions.
+from the same non-Rigby workspace. Legacy mailbox linking remains available
+for these projects.
 
-If a mapped project has exactly two running tmux sessions, `oc attach`
-auto-creates `.rig-mailbox` when missing and auto-links them as Rig A/Rig B
-when the TUI refreshes. This covers the common case where you create two
-`zoom-mvps` or `cash-claw` sessions and want them tied together without
-remembering any setup commands.
+Rigby projects are different: `oc` detects `.rigby-enabled` and treats Rigby
+as the authority. The TUI and `oc new` reconcile sessions through the public
+`launch-rigby-iterm --no-iterm` command, read role targets through
+`rigby attach-metadata`, and resolve the canonical external mailbox through
+`rig path`. They never read or write a project-local shadow `.rig-mailbox`.
 
-For the three-rig setup, use agent-aware attach only when you intend to launch
-or route an agent. It creates a dedicated
-`agent-claude`, `agent-codex`, or `agent-opencode` window, starts the selected
-CLI once, sets `RIG_NAME`/`RIG_WORKSPACE`, creates the project mailbox when
-needed, and writes the stable tmux target into `rigs.toml`:
+For a Rigby project, use role-aware attach:
 
 ```bash
 oc attach lullafi --agent claude
@@ -128,12 +125,15 @@ oc attach lullafi --agent codex
 oc attach lullafi --agent opencode
 ```
 
-The agent flag can also be written as `--runtime`. Repeating the command is
-safe: an existing matching role/session is reused, and an unassigned role gets
-the next sibling session automatically, rather than launching a second copy.
-The role defaults are Claude → Rig A, Codex → Rig B, and OpenCode → Rig C. The
-The normal `oc attach` picker remains available when you only want to attach
-without changing the runtime or mailbox routing.
+The `--agent` flag can also be written as `--runtime`. On Rigby projects it
+resolves the already-provisioned public role target; it does not create a
+second private mailbox or arbitrary replacement session. The normal `oc attach`
+picker remains available when you only want to attach without changing runtime
+or mailbox routing.
+
+`oc restart <project> <role>` restarts only the runtime child inside a
+Rigby-managed producer pane. The Rigby runner, mailbox, tmux session, and other
+roles remain in place; the selected role's current runtime task is interrupted.
 
 `oc attach` understands producer worktrees and controller sessions. It groups
 sessions using project-local mailbox targets first, then falls back to the
@@ -142,14 +142,14 @@ means Rig B/C worktrees and a separate loop-controller worktree still appear
 under one project in the picker. The `--role` form is read-only attachment:
 it never creates a session or launches an agent.
 
-The standalone wizard also exists:
+The standalone legacy mailbox wizard also exists:
 
 ```bash
 oc mailbox
 ```
 
-For scripted setup, `oc` can create the project mailbox if needed and write the
-stable tmux targets into `.rig-mailbox/rigs.toml`:
+For scripted setup of a non-Rigby project, `oc` can create the project mailbox
+if needed and write the stable tmux targets into `.rig-mailbox/rigs.toml`:
 
 ```bash
 oc mailbox link cash-claw-rig-a --rig "Rig A" --runtime claude-code --workspace ~/dev/cash-claw
