@@ -574,10 +574,10 @@ def _resolve_project_role(project_name: str, requested_role: str) -> str | None:
         row for row in _project_sessions(project_name) if resolve_role(row.get("role")) == role
     ]
     if len(matches) == 1:
-        return str(matches[0]["name"])
+        return str(matches[0].get("mailbox_target") or matches[0]["name"])
     registered = [row for row in matches if str(row.get("mailbox_target") or "")]
     if len(registered) == 1:
-        return str(registered[0]["name"])
+        return str(registered[0]["mailbox_target"])
     return None
 
 
@@ -950,8 +950,8 @@ def cmd_restart(args: argparse.Namespace) -> int:
         print(f"no project mapping for '{project_name}'")
         return 1
 
-    session = _resolve_project_role(project_name, requested_role)
-    if not session:
+    target = _resolve_project_role(project_name, requested_role)
+    if not target:
         available = [
             f"{resolve_role(row.get('role')) or row.get('role')}={row.get('name')}"
             for row in _project_sessions(project_name)
@@ -961,16 +961,9 @@ def cmd_restart(args: argparse.Namespace) -> int:
         print(f"role '{requested_role}' is not running for project '{project_name}'{detail}")
         return 1
 
-    role_row = next(
-        (
-            row
-            for row in _project_sessions(project_name)
-            if str(row.get("name") or "") == session
-            and resolve_role(row.get("role")) == canonical_role
-        ),
-        None,
-    )
-    target = str(role_row.get("mailbox_target") or f"{session}:0") if role_row else f"{session}:0"
+    session = _session_from_tmux_target(target)
+    if ":" not in target:
+        target = f"{target}:0"
     try:
         previous_pid, current_pid = tmux.restart_runtime(target, runtime)
     except tmux.TmuxError as e:

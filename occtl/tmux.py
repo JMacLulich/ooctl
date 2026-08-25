@@ -265,7 +265,10 @@ def _command_name(command: str) -> str:
     try:
         argv = shlex.split(command)
     except ValueError:
-        return ""
+        # `ps command=` is display text, not a lossless shell command. Agent
+        # prompts can contain unmatched quotes even though argv[0] is valid.
+        first = command.lstrip().split(None, 1)[0] if command.strip() else ""
+        return os.path.basename(first.strip("'\""))
     return os.path.basename(argv[0]) if argv else ""
 
 
@@ -284,7 +287,7 @@ def _runtime_pid(target: str, runtime: str) -> int:
     candidates = [
         process
         for process in _descendant_processes(pane_pid, table)
-        if int(process["pgid"]) == pane_pid and _command_name(str(process["command"])) in expected
+        if _command_name(str(process["command"])) in expected
     ]
     if len(candidates) != 1:
         found = ", ".join(str(process["pid"]) for process in candidates) or "none"

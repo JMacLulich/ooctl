@@ -80,11 +80,11 @@ def test_restart_runtime_kills_only_the_runtime_child_and_waits_for_replacement(
 ) -> None:
     old_processes = {
         100: {"pid": 100, "ppid": 1, "pgid": 100, "command": "rigby runner"},
-        200: {"pid": 200, "ppid": 100, "pgid": 100, "command": "/opt/bin/opencode"},
+        200: {"pid": 200, "ppid": 100, "pgid": 75, "command": "/opt/bin/opencode"},
     }
     new_processes = {
         100: {"pid": 100, "ppid": 1, "pgid": 100, "command": "rigby runner"},
-        300: {"pid": 300, "ppid": 100, "pgid": 100, "command": "/opt/bin/opencode"},
+        300: {"pid": 300, "ppid": 100, "pgid": 75, "command": "/opt/bin/opencode"},
     }
     snapshots = iter([old_processes, new_processes])
     killed: list[tuple[int, int]] = []
@@ -98,6 +98,25 @@ def test_restart_runtime_kills_only_the_runtime_child_and_waits_for_replacement(
 
     assert (previous, current) == (200, 300)
     assert killed and killed[0][0] == 200
+
+
+def test_runtime_pid_ignores_unrelated_runtime_outside_rigby_runner_tree(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    processes = {
+        100: {"pid": 100, "ppid": 1, "pgid": 75, "command": "rigby runner"},
+        200: {
+            "pid": 200,
+            "ppid": 100,
+            "pgid": 75,
+            "command": '/opt/bin/codex -c prompt="unmatched',
+        },
+        300: {"pid": 300, "ppid": 1, "pgid": 300, "command": "/opt/bin/codex"},
+    }
+    monkeypatch.setattr(tmux, "_pane_pid", lambda _target: 100)
+    monkeypatch.setattr(tmux, "_process_table", lambda: processes)
+
+    assert tmux._runtime_pid("rigby-neuma-rig-b:0", "codex") == 200
 
 
 def test_show_global_option_uses_socket_path(monkeypatch: pytest.MonkeyPatch) -> None:

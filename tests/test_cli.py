@@ -157,7 +157,11 @@ def test_cmd_restart_targets_only_selected_rigby_runtime(monkeypatch, capsys) ->
         "get_mapping",
         lambda name: "/tmp/lullafi" if name == "lullafi" else None,
     )
-    monkeypatch.setattr(cli, "_resolve_project_role", lambda _project, _role: "studio-lullafi-c")
+    monkeypatch.setattr(
+        cli,
+        "_resolve_project_role",
+        lambda _project, _role: "studio-lullafi-c:rig-c",
+    )
     monkeypatch.setattr(
         cli,
         "_project_sessions",
@@ -284,8 +288,8 @@ def test_project_role_resolution_normalizes_requested_and_registered_role(
         ],
     )
 
-    assert cli._resolve_project_role("neuma", "rig-b") == "rig-v2-neuma-interactive-rig-b"
-    assert cli._resolve_project_role("neuma", "Rig B") == "rig-v2-neuma-interactive-rig-b"
+    assert cli._resolve_project_role("neuma", "rig-b") == "rig-v2-neuma-interactive-rig-b:0"
+    assert cli._resolve_project_role("neuma", "Rig B") == "rig-v2-neuma-interactive-rig-b:0"
 
 
 def test_project_role_resolution_prefers_registered_target_over_stale_duplicate(
@@ -308,7 +312,7 @@ def test_project_role_resolution_prefers_registered_target_over_stale_duplicate(
         ],
     )
 
-    assert cli._resolve_project_role("neuma", "RIG B") == "rig-v2-neuma-interactive-rig-b"
+    assert cli._resolve_project_role("neuma", "RIG B") == "rig-v2-neuma-interactive-rig-b:0"
 
 
 def test_project_role_attach_does_not_create_a_new_session(monkeypatch, capsys) -> None:
@@ -321,7 +325,11 @@ def test_project_role_attach_does_not_create_a_new_session(monkeypatch, capsys) 
         "get_mapping",
         lambda name: "/tmp/lullafi" if name == "lullafi" else None,
     )
-    monkeypatch.setattr(cli, "_resolve_project_role", lambda _project, _role: "studio-lullafi-c")
+    monkeypatch.setattr(
+        cli,
+        "_resolve_project_role",
+        lambda _project, _role: "studio-lullafi-c:0",
+    )
     monkeypatch.setattr(
         cli.tmux,
         "has_session",
@@ -343,7 +351,7 @@ def test_project_role_attach_does_not_create_a_new_session(monkeypatch, capsys) 
     )
 
     assert cli.cmd_attach(args) == 0
-    assert called == {"attached": ("studio-lullafi-c", False), "created": False}
+    assert called == {"attached": ("studio-lullafi-c:0", False), "created": False}
     assert "routed" not in capsys.readouterr().out
 
 
