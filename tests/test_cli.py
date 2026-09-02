@@ -151,41 +151,27 @@ def test_restart_command_accepts_project_role() -> None:
     assert args.role == "rig-c"
 
 
-def test_cmd_restart_targets_only_selected_rigby_runtime(monkeypatch, capsys) -> None:
+def test_cmd_restart_delegates_selected_role_to_public_rigby_reload(monkeypatch, capsys) -> None:
     monkeypatch.setattr(
         cli.config,
         "get_mapping",
         lambda name: "/tmp/lullafi" if name == "lullafi" else None,
     )
-    monkeypatch.setattr(
-        cli,
-        "_resolve_project_role",
-        lambda _project, _role: "studio-lullafi-c:rig-c",
-    )
-    monkeypatch.setattr(
-        cli,
-        "_project_sessions",
-        lambda _project: [
-            {
-                "name": "studio-lullafi-c",
-                "role": "RIG_C",
-                "mailbox_target": "studio-lullafi-c:rig-c",
-            }
-        ],
-    )
+    monkeypatch.setattr(cli.rigby, "is_enabled", lambda _workspace: True)
     called: dict[str, object] = {}
-
-    def _restart(target: str, runtime: str) -> tuple[int, int]:
-        called.update(target=target, runtime=runtime)
-        return (8266, 9001)
-
-    monkeypatch.setattr(cli.tmux, "restart_runtime", _restart)
+    monkeypatch.setattr(
+        cli.rigby,
+        "reload_role",
+        lambda workspace, role: (
+            called.update(workspace=workspace, role=role) or {"status": "RELOADED"}
+        ),
+    )
 
     rc = cli.cmd_restart(argparse.Namespace(name="lullafi", role="rig-c"))
 
     assert rc == 0
-    assert called == {"target": "studio-lullafi-c:rig-c", "runtime": "opencode"}
-    assert "pid=8266->9001" in capsys.readouterr().out
+    assert called == {"workspace": "/tmp/lullafi", "role": "rig-c"}
+    assert "authority=rigby" in capsys.readouterr().out
 
 
 def test_cmd_restart_rejects_loop_role(monkeypatch, capsys) -> None:

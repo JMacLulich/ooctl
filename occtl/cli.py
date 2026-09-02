@@ -938,42 +938,33 @@ def cmd_attach(args: argparse.Namespace) -> int:
 def cmd_restart(args: argparse.Namespace) -> int:
     project_name = str(args.name)
     requested_role = str(args.role)
-    canonical_role = resolve_role(requested_role)
-    if not canonical_role:
+    role_label = resolve_role(requested_role)
+    if not role_label:
         print(f"unknown role '{requested_role}'; expected rig-a, rig-b, or rig-c")
         return 1
-    runtime = ROLE_RUNTIMES.get(canonical_role)
+    runtime = ROLE_RUNTIMES.get(role_label)
     if not runtime:
         print("restart supports producer roles rig-a, rig-b, and rig-c; loop cannot be restarted")
         return 1
-    if not config.get_mapping(project_name):
+    role_key = _rigby_role_key(role_label)
+    workspace = config.get_mapping(project_name)
+    if not workspace:
         print(f"no project mapping for '{project_name}'")
         return 1
 
-    target = _resolve_project_role(project_name, requested_role)
-    if not target:
-        available = [
-            f"{resolve_role(row.get('role')) or row.get('role')}={row.get('name')}"
-            for row in _project_sessions(project_name)
-            if row.get("role")
-        ]
-        detail = "; available: " + ", ".join(available) if available else ""
-        print(f"role '{requested_role}' is not running for project '{project_name}'{detail}")
+    if not rigby.is_enabled(workspace):
+        print(
+            f"project '{project_name}' is not managed by Rigby; "
+            "restart has no safe runtime authority"
+        )
         return 1
-
-    session = _session_from_tmux_target(target)
-    if ":" not in target:
-        target = f"{target}:0"
     try:
-        previous_pid, current_pid = tmux.restart_runtime(target, runtime)
-    except tmux.TmuxError as e:
+        rigby.reload_role(workspace, role_key)
+    except rigby.RigbyError as e:
         print(str(e))
         return 1
 
-    print(
-        f"restarted:\t{project_name}/{canonical_role}\truntime={runtime}"
-        f"\tsession={session}\tpid={previous_pid}->{current_pid}"
-    )
+    print(f"restarted:\t{project_name}/{role_key}\truntime={runtime}\tauthority=rigby")
     return 0
 
 

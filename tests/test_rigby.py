@@ -90,6 +90,46 @@ def test_canonical_mailbox_uses_public_rig_path(tmp_path: Path, monkeypatch) -> 
     assert calls == [["/bin/rig", "path"]]
 
 
+def test_reload_role_uses_public_rigby_operation(tmp_path: Path, monkeypatch) -> None:
+    config_path = tmp_path / "state" / "config.json"
+    config_path.parent.mkdir()
+    config_path.write_text("{}", encoding="utf-8")
+    _marker(tmp_path, config_path)
+    calls: list[list[str]] = []
+
+    def fake_run(argv, *, cwd, check, capture_output, text):
+        calls.append(argv)
+        return subprocess.CompletedProcess(
+            argv,
+            0,
+            stdout=json.dumps(
+                {
+                    "status": "RELOADED",
+                    "roles": {"rig-b": {"status": "HEALTHY", "action": "RELOADED"}},
+                }
+            ),
+            stderr="",
+        )
+
+    monkeypatch.setattr(rigby, "_command_path", lambda name: f"/bin/{name}")
+    monkeypatch.setattr(rigby.subprocess, "run", fake_run)
+
+    assert rigby.reload_role(tmp_path, "rig-b")["status"] == "RELOADED"
+    assert calls == [
+        [
+            "/bin/rigby",
+            "interactive",
+            "reload",
+            "--config",
+            str(config_path),
+            "--role",
+            "rig-b",
+            "--apply",
+            "--json",
+        ]
+    ]
+
+
 def test_session_inventory_uses_rigby_metadata_instead_of_shadow_mailbox(
     tmp_path: Path, monkeypatch
 ) -> None:

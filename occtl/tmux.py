@@ -3,9 +3,7 @@ from __future__ import annotations
 import os
 import resource
 import shlex
-import signal
 import subprocess
-import time
 from collections.abc import Sequence
 
 
@@ -295,32 +293,6 @@ def _runtime_pid(target: str, runtime: str) -> int:
             f"expected exactly one {runtime} process under tmux pane '{target}'; found {found}"
         )
     return int(candidates[0]["pid"])
-
-
-def restart_runtime(target: str, runtime: str, timeout: float = 15.0) -> tuple[int, int]:
-    """Restart only the runtime child owned by a Rigby runner pane.
-
-    Rigby owns the pane process and relaunches its visible runtime child when
-    that child exits. Killing the exact child preserves the runner, mailbox,
-    and tmux session while still applying a new runtime/profile environment.
-    """
-    previous_pid = _runtime_pid(target, runtime)
-    try:
-        os.kill(previous_pid, signal.SIGTERM)
-    except OSError as exc:
-        raise TmuxError(f"could not stop {runtime} process {previous_pid}: {exc}") from exc
-
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        try:
-            current_pid = _runtime_pid(target, runtime)
-        except TmuxError:
-            current_pid = 0
-        if current_pid and current_pid != previous_pid:
-            return previous_pid, current_pid
-        time.sleep(0.25)
-
-    raise TmuxError(f"{runtime} did not relaunch under tmux pane '{target}' within {timeout:g}s")
 
 
 def pane_last_activity(session: str, window: str = "main") -> int:

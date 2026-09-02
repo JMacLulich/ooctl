@@ -165,6 +165,41 @@ def canonical_mailbox(workspace: str | Path) -> Path:
     return mailbox_path
 
 
+def reload_role(workspace: str | Path, role: str) -> dict[str, object]:
+    """Reload one idle lane through Rigby's public custody-safe operation."""
+    base = project(workspace)
+    if base is None:
+        raise RigbyError(f"not a Rigby project: {workspace}")
+    result = _run_public(
+        "rigby",
+        [
+            "interactive",
+            "reload",
+            "--config",
+            str(base.config_path),
+            "--role",
+            role,
+            "--apply",
+            "--json",
+        ],
+        cwd=base.project_root,
+    )
+    if result.returncode != 0:
+        raise RigbyError(f"rigby interactive reload failed: {_failure_detail(result)}")
+    try:
+        payload = json.loads(result.stdout)
+        role_report = payload["roles"][role]
+        status = payload["status"]
+        if not isinstance(role_report, dict) or not isinstance(status, str):
+            raise ValueError("reload report has invalid fields")
+    except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+        raise RigbyError(f"invalid rigby reload report: {exc}") from exc
+    if status != "RELOADED" or role_report.get("action") != "RELOADED":
+        reason = str(role_report.get("reason") or role_report.get("status") or status)
+        raise RigbyError(f"Rigby protected {role} from restart: {reason}")
+    return payload
+
+
 def reconcile(workspace: str | Path) -> RigbyProject:
     """Create/reconcile Rigby sessions and mailbox through the canonical launcher."""
     base = project(workspace)
