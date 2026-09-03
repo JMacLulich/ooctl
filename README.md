@@ -140,7 +140,9 @@ sessions using project-local mailbox targets first, then falls back to the
 stable `<host>-<project>-a`, `-b`, `-c`, and `-loop` naming convention. This
 means Rig B/C worktrees and a separate loop-controller worktree still appear
 under one project in the picker. The `--role` form is read-only attachment:
-it never creates a session or launches an agent.
+it never creates a session or launches an agent. Explicit project-role attaches
+also title the selected tmux pane and enclosing terminal as `<project> <role>`
+(for example, `lullafi rig-b`) without renaming the tmux session or window.
 
 The standalone legacy mailbox wizard also exists:
 

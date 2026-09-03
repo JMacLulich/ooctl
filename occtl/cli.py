@@ -858,6 +858,7 @@ def cmd_attach(args: argparse.Namespace) -> int:
         return 1
 
     target: str | None
+    attach_title: str | None = None
     if requested_name and requested_role:
         if tmux.has_session(requested_name):
             print("--role cannot be combined with a literal tmux session name")
@@ -881,6 +882,7 @@ def cmd_attach(args: argparse.Namespace) -> int:
             detail = "; available: " + ", ".join(available) if available else ""
             print(f"role '{requested_role}' is not running for project '{requested_name}'{detail}")
             return 1
+        attach_title = f"{requested_name} {_rigby_role_key(requested_role)}"
     elif (
         requested_name
         and config.get_mapping(requested_name)
@@ -931,6 +933,8 @@ def cmd_attach(args: argparse.Namespace) -> int:
         print(warning)
     for hint in _clipboard_attach_hints():
         print(hint)
+    if attach_title:
+        tmux.set_attach_titles(target, attach_title)
     tmux.attach(target, control_mode=bool(getattr(args, "cc", False)))
     return 0
 

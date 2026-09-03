@@ -75,6 +75,44 @@ def test_attach_keeps_existing_nofile_limit_when_already_high_enough(
     assert called["setrlimit"] is False
 
 
+def test_set_attach_titles_uses_argv_safe_tmux_commands(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    commands: list[list[str]] = []
+    monkeypatch.setattr(tmux, "run", lambda command: commands.append(command) or "")
+
+    tmux.set_attach_titles("studio-lullafi-b:0", "lullafi rig-b")
+
+    assert commands == [
+        ["tmux", "select-pane", "-t", "studio-lullafi-b:0", "-T", "lullafi rig-b"],
+        [
+            "tmux",
+            "set-option",
+            "-t",
+            "studio-lullafi-b:0",
+            "set-titles-string",
+            "lullafi rig-b",
+        ],
+        ["tmux", "set-option", "-t", "studio-lullafi-b:0", "set-titles", "on"],
+    ]
+
+
+def test_set_attach_titles_ignores_cosmetic_tmux_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    commands: list[list[str]] = []
+
+    def _fail(command: list[str]) -> str:
+        commands.append(command)
+        raise tmux.TmuxError("title failed")
+
+    monkeypatch.setattr(tmux, "run", _fail)
+
+    tmux.set_attach_titles("studio-lullafi-b:0", "lullafi rig-b")
+
+    assert len(commands) == 3
+
+
 def test_runtime_pid_ignores_unrelated_runtime_outside_rigby_runner_tree(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

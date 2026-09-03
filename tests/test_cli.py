@@ -325,6 +325,7 @@ def test_project_role_attach_does_not_create_a_new_session(monkeypatch, capsys) 
     monkeypatch.setattr(cli, "_clipboard_attach_hints", lambda: [])
     monkeypatch.setattr(cli.config, "set_focus", lambda _name: None)
     monkeypatch.setattr(cli.config, "touch_recent_attach", lambda _name: None)
+    monkeypatch.setattr(cli.tmux, "set_attach_titles", lambda _target, _title: None)
     monkeypatch.setattr(
         cli.tmux,
         "attach",
@@ -339,6 +340,54 @@ def test_project_role_attach_does_not_create_a_new_session(monkeypatch, capsys) 
     assert cli.cmd_attach(args) == 0
     assert called == {"attached": ("studio-lullafi-c:0", False), "created": False}
     assert "routed" not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "attach_args",
+    [
+        ["attach", "lullafi", "rig-b"],
+        ["attach", "lullafi", "--role", "Rig B"],
+        ["attach", "lullafi", "--role", "RIG_B"],
+        ["attach", "lullafi", "--role", "b"],
+    ],
+)
+def test_project_role_attach_sets_canonical_titles_before_attach(
+    monkeypatch, attach_args: list[str]
+) -> None:
+    args = cli.build_parser().parse_args(attach_args)
+    calls: list[tuple[object, ...]] = []
+
+    monkeypatch.setattr(cli.config, "get_mapping", lambda _name: "/tmp/lullafi")
+    monkeypatch.setattr(
+        cli,
+        "_resolve_project_role",
+        lambda _project, _role: "studio-lullafi-b:0",
+    )
+    monkeypatch.setattr(
+        cli.tmux,
+        "has_session",
+        lambda name: name == "studio-lullafi-b",
+    )
+    monkeypatch.setattr(cli, "_ensure_clipboard_for_attach", lambda: [])
+    monkeypatch.setattr(cli, "_clipboard_attach_hints", lambda: [])
+    monkeypatch.setattr(cli.config, "set_focus", lambda _name: None)
+    monkeypatch.setattr(cli.config, "touch_recent_attach", lambda _name: None)
+    monkeypatch.setattr(
+        cli.tmux,
+        "set_attach_titles",
+        lambda target, title: calls.append(("titles", target, title)),
+    )
+    monkeypatch.setattr(
+        cli.tmux,
+        "attach",
+        lambda target, control_mode=False: calls.append(("attach", target, control_mode)),
+    )
+
+    assert cli.cmd_attach(args) == 0
+    assert calls == [
+        ("titles", "studio-lullafi-b:0", "lullafi rig-b"),
+        ("attach", "studio-lullafi-b:0", False),
+    ]
 
 
 def test_clipboard_setup_parser_accepts_flags() -> None:

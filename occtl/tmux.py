@@ -190,6 +190,21 @@ def _ensure_attach_nofile_limit(minimum: int = 1024) -> None:
         return
 
 
+def set_attach_titles(target: str, title: str) -> None:
+    """Best-effort pane and client terminal titles for an attach target."""
+    commands = (
+        ["tmux", "select-pane", "-t", target, "-T", title],
+        ["tmux", "set-option", "-t", target, "set-titles-string", title],
+        ["tmux", "set-option", "-t", target, "set-titles", "on"],
+    )
+    for command in commands:
+        try:
+            run(command)
+        except TmuxError:
+            # Titles are cosmetic; a failure here must not block attachment.
+            continue
+
+
 def attach(name: str, control_mode: bool = False) -> None:
     _ensure_attach_nofile_limit()
     cmd = ["tmux"]
