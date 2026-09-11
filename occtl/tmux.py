@@ -48,6 +48,10 @@ def has_session(name: str) -> bool:
     return p.returncode == 0
 
 
+def has_session_exact(name: str) -> bool:
+    return has_session(f"={name}")
+
+
 def list_sessions() -> list[dict]:
     try:
         out = run(

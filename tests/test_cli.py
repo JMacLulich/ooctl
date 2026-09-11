@@ -342,6 +342,83 @@ def test_project_role_attach_does_not_create_a_new_session(monkeypatch, capsys) 
     assert "routed" not in capsys.readouterr().out
 
 
+def test_project_role_attach_prefers_mapping_over_prefix_matched_session(
+    monkeypatch, tmp_path: Path
+) -> None:
+    args = cli.build_parser().parse_args(["attach", "neuma", "rig-a"])
+    workspace = tmp_path / "neuma"
+    managed_session = "rigby-neuma-interactive-rig-a"
+    managed_target = f"{managed_session}:0"
+    calls: list[tuple[object, ...]] = []
+
+    monkeypatch.setattr(
+        cli.config,
+        "get_mapping",
+        lambda name: str(workspace) if name == "neuma" else None,
+    )
+    monkeypatch.setattr(cli.config, "load_mappings", lambda: {"neuma": str(workspace)})
+    monkeypatch.setattr(cli.rigby, "is_enabled", lambda _workspace: True)
+    monkeypatch.setattr(
+        cli.rigby,
+        "attach_metadata",
+        lambda _workspace: cli.rigby.RigbyProject(
+            project_root=workspace,
+            config_path=workspace / "rigby.toml",
+            roles=(
+                cli.rigby.RigbyRole(
+                    key="rig-a",
+                    runtime="codex",
+                    tmux_target=managed_target,
+                    worktree=workspace,
+                ),
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        cli.tmux,
+        "list_sessions_with_paths",
+        lambda: [
+            {"name": managed_session, "attached": False, "windows": 1, "path": str(workspace)},
+            {
+                "name": "neuma-voyager",
+                "attached": False,
+                "windows": 1,
+                "path": str(tmp_path / "voyager"),
+            },
+        ],
+    )
+    monkeypatch.setattr(
+        cli.tmux,
+        "has_session",
+        lambda name: name in {"neuma", managed_session},
+    )
+    monkeypatch.setattr(
+        cli.tmux,
+        "has_session_exact",
+        lambda _name: pytest.fail("mapped projects must bypass literal-session detection"),
+    )
+    monkeypatch.setattr(cli, "_ensure_clipboard_for_attach", lambda: [])
+    monkeypatch.setattr(cli, "_clipboard_attach_hints", lambda: [])
+    monkeypatch.setattr(cli.config, "set_focus", lambda _name: None)
+    monkeypatch.setattr(cli.config, "touch_recent_attach", lambda _name: None)
+    monkeypatch.setattr(
+        cli.tmux,
+        "set_attach_titles",
+        lambda target, title: calls.append(("titles", target, title)),
+    )
+    monkeypatch.setattr(
+        cli.tmux,
+        "attach",
+        lambda target, control_mode=False: calls.append(("attach", target, control_mode)),
+    )
+
+    assert cli.cmd_attach(args) == 0
+    assert calls == [
+        ("titles", managed_target, "neuma rig-a"),
+        ("attach", managed_target, False),
+    ]
+
+
 @pytest.mark.parametrize(
     "attach_args",
     [

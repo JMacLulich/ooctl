@@ -28,6 +28,19 @@ def test_has_session_raises_tmux_error_when_tmux_missing(monkeypatch: pytest.Mon
         tmux.has_session("infra")
 
 
+def test_has_session_exact_uses_exact_tmux_target(monkeypatch: pytest.MonkeyPatch) -> None:
+    commands: list[list[str]] = []
+
+    def _run(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        commands.append(command)
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(subprocess, "run", _run)
+
+    assert tmux.has_session_exact("neuma") is True
+    assert commands == [["tmux", "has-session", "-t", "=neuma"]]
+
+
 def test_capture_last_lines_returns_empty_on_tmux_error(monkeypatch: pytest.MonkeyPatch) -> None:
     def _raise_tmux_error(_: object) -> str:
         raise tmux.TmuxError("capture failed")

@@ -860,16 +860,16 @@ def cmd_attach(args: argparse.Namespace) -> int:
     target: str | None
     attach_title: str | None = None
     if requested_name and requested_role:
-        if tmux.has_session(requested_name):
-            print("--role cannot be combined with a literal tmux session name")
-            return 1
-        if not config.get_mapping(requested_name):
+        mapped_dir = config.get_mapping(requested_name)
+        if not mapped_dir:
+            if tmux.has_session_exact(requested_name):
+                print("--role cannot be combined with a literal tmux session name")
+                return 1
             print(f"no project mapping for '{requested_name}'")
             return 1
         target = _resolve_project_role(requested_name, requested_role)
         if not target:
-            mapped_dir = config.get_mapping(requested_name)
-            if mapped_dir and rigby.is_enabled(mapped_dir):
+            if rigby.is_enabled(mapped_dir):
                 if _reconcile_rigby_mapping(requested_name, mapped_dir) != 0:
                     return 1
                 target = _resolve_project_role(requested_name, requested_role)
